@@ -23,7 +23,7 @@ import (
 	"github.com/opentofu/opentofu/internal/tfdiags"
 )
 
-// PlanOpts are the various options that affect the details of how Terraform
+// PlanOpts are the various options that affect the details of how OpenTofu
 // will build a plan.
 type PlanOpts struct {
 	// Mode defines what variety of plan the caller wishes to create.
@@ -54,12 +54,12 @@ type PlanOpts struct {
 	SetVariables InputValues
 
 	// If Targets has a non-zero length then it activates targeted planning
-	// mode, where Terraform will take actions only for resource instances
+	// mode, where OpenTofu will take actions only for resource instances
 	// mentioned in this set and any other objects those resource instances
 	// depend on.
 	//
 	// Targeted planning mode is intended for exceptional use only,
-	// and so populating this field will cause Terraform to generate extra
+	// and so populating this field will cause OpenTofu to generate extra
 	// warnings as part of the planning result.
 	Targets []addrs.Targetable
 
@@ -68,9 +68,9 @@ type PlanOpts struct {
 	// plan would otherwise have been to either update the object in-place or
 	// to take no action on it at all.
 	//
-	// A typical use of this argument is to ask Terraform to replace an object
+	// A typical use of this argument is to ask OpenTofu to replace an object
 	// which the user has determined is somehow degraded (via information from
-	// outside of Terraform), thereby hopefully replacing it with a
+	// outside of OpenTofu), thereby hopefully replacing it with a
 	// fully-functional new object.
 	ForceReplace []addrs.AbsResourceInstance
 
@@ -83,7 +83,7 @@ type PlanOpts struct {
 	// will be added to the plan graph.
 	ImportTargets []*ImportTarget
 
-	// GenerateConfig tells Terraform where to write any generated configuration
+	// GenerateConfig tells OpenTofu where to write any generated configuration
 	// for any ImportTargets that do not have configuration already.
 	//
 	// If empty, then no config will be generated.
@@ -99,7 +99,7 @@ type PlanOpts struct {
 // special options.
 //
 // If the returned diagnostics contains no errors then the returned plan is
-// applyable, although Terraform cannot guarantee that applying it will fully
+// applyable, although OpenTofu cannot guarantee that applying it will fully
 // succeed. If the returned diagnostics contains errors but this method
 // still returns a non-nil Plan then the plan describes the subset of actions
 // planned so far, which is not safe to apply but could potentially be used
@@ -143,17 +143,17 @@ func (c *Context) Plan(config *configs.Config, prevRunState *states.State, opts 
 			diags = diags.Append(tfdiags.Sourceless(
 				tfdiags.Error,
 				"Incompatible plan options",
-				"Cannot skip refreshing in refresh-only mode. This is a bug in OpenTF.",
+				"Cannot skip refreshing in refresh-only mode. This is a bug in OpenTofu.",
 			))
 			return nil, diags
 		}
 	default:
 		// The CLI layer (and other similar callers) should not try to
-		// create a context for a mode that OpenTF Core doesn't support.
+		// create a context for a mode that OpenTofu Core doesn't support.
 		diags = diags.Append(tfdiags.Sourceless(
 			tfdiags.Error,
 			"Unsupported plan mode",
-			fmt.Sprintf("OpenTF Core doesn't know how to handle plan mode %s. This is a bug in OpenTF.", opts.Mode),
+			fmt.Sprintf("OpenTofu Core doesn't know how to handle plan mode %s. This is a bug in OpenTofu.", opts.Mode),
 		))
 		return nil, diags
 	}
@@ -184,7 +184,7 @@ func (c *Context) Plan(config *configs.Config, prevRunState *states.State, opts 
 			"Resource targeting is in effect",
 			`You are creating a plan with the -target option, which means that the result of this plan may not represent all of the changes requested by the current configuration.
 
-The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTF specifically suggests to use it as part of an error message.`,
+The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTofu specifically suggests to use it as part of an error message.`,
 		))
 	}
 
@@ -261,7 +261,7 @@ The -target option is not for routine use, and is provided only for exceptional 
 
 // checkApplyGraph builds the apply graph out of the current plan to
 // check for any errors that may arise once the planned changes are added to
-// the graph. This allows terraform to report errors (mostly cycles) during
+// the graph. This allows tofu to report errors (mostly cycles) during
 // plan that would otherwise only crop up during apply
 func (c *Context) checkApplyGraph(plan *plans.Plan, config *configs.Config) tfdiags.Diagnostics {
 	if plan.Changes.Empty() {
@@ -282,7 +282,7 @@ var DefaultPlanOpts = &PlanOpts{
 //
 // This helper function is primarily intended for use in straightforward
 // tests that don't need any of the more "esoteric" planning options. For
-// handling real user requests to run Terraform, it'd probably be better
+// handling real user requests to run OpenTofu, it'd probably be better
 // to construct a *PlanOpts value directly and provide a way for the user
 // to set values for all of its fields.
 //
@@ -343,7 +343,7 @@ func (c *Context) refreshOnlyPlan(config *configs.Config, prevRunState *states.S
 		diags = diags.Append(tfdiags.Sourceless(
 			tfdiags.Error,
 			"Invalid refresh-only plan",
-			"OpenTF generated planned resource changes in a refresh-only plan. This is a bug in OpenTF.",
+			"OpenTofu generated planned resource changes in a refresh-only plan. This is a bug in OpenTofu.",
 		))
 	}
 
@@ -406,8 +406,7 @@ func (c *Context) destroyPlan(config *configs.Config, prevRunState *states.State
 		// We'll use the refreshed state -- which is the  "prior state" from
 		// the perspective of this "destroy plan" -- as the starting state
 		// for our destroy-plan walk, so it can take into account if we
-		// detected during refreshing that anything was already deleted outside
-		// of Terraform.
+		// detected during refreshing that anything was already deleted outside OpenTofu.
 		priorState = refreshPlan.PriorState.DeepCopy()
 
 		// The refresh plan may have upgraded state for some resources, make
@@ -511,7 +510,7 @@ func (c *Context) prePlanVerifyTargetedMoves(moveResults refactoring.MoveResults
 			tfdiags.Error,
 			"Moved resource instances excluded by targeting",
 			fmt.Sprintf(
-				"Resource instances in your current state have moved to new addresses in the latest configuration. OpenTF must include those resource instances while planning in order to ensure a correct result, but your -target=... options do not fully cover all of those resource instances.\n\nTo create a valid plan, either remove your -target=... options altogether or add the following additional target options:%s\n\nNote that adding these options may include further additional resource instances in your plan, in order to respect object dependencies.",
+				"Resource instances in your current state have moved to new addresses in the latest configuration. OpenTofu must include those resource instances while planning in order to ensure a correct result, but your -target=... options do not fully cover all of those resource instances.\n\nTo create a valid plan, either remove your -target=... options altogether or add the following additional target options:%s\n\nNote that adding these options may include further additional resource instances in your plan, in order to respect object dependencies.",
 				listBuf.String(),
 			),
 		))
@@ -814,9 +813,8 @@ func (c *Context) driftedResources(config *configs.Config, oldState, newState *s
 				// We can detect three types of changes after refreshing state,
 				// only two of which are easily understood as "drift":
 				//
-				// - Resources which were deleted outside of Terraform;
-				// - Resources where the object value has changed outside of
-				//   Terraform;
+				// - Resources which were deleted outside OpenTofu;
+				// - Resources where the object value has changed outside OpenTofu;
 				// - Resources which have been moved without other changes.
 				//
 				// All of these are returned as drift, to allow refresh-only plans
@@ -858,11 +856,11 @@ func (c *Context) driftedResources(config *configs.Config, oldState, newState *s
 
 // PlanGraphForUI is a last vestage of graphs in the public interface of Context
 // (as opposed to graphs as an implementation detail) intended only for use
-// by the "terraform graph" command when asked to render a plan-time graph.
+// by the "tofu graph" command when asked to render a plan-time graph.
 //
 // The result of this is intended only for rendering to the user as a dot
 // graph, and so may change in future in order to make the result more useful
-// in that context, even if drifts away from the physical graph that Terraform
+// in that context, even if drifts away from the physical graph that OpenTofu
 // Core currently uses as an implementation detail of planning.
 func (c *Context) PlanGraphForUI(config *configs.Config, prevRunState *states.State, mode plans.Mode) (*Graph, tfdiags.Diagnostics) {
 	// For now though, this really is just the internal graph, confusing
@@ -892,7 +890,7 @@ func blockedMovesWarningDiag(results refactoring.MoveResults) tfdiags.Diagnostic
 		tfdiags.Warning,
 		"Unresolved resource instance address changes",
 		fmt.Sprintf(
-			"OpenTF tried to adjust resource instance addresses in the prior state based on change information recorded in the configuration, but some adjustments did not succeed due to existing objects already at the intended addresses:%s\n\nOpenTF has planned to destroy these objects. If OpenTF's proposed changes aren't appropriate, you must first resolve the conflicts using the \"tofu state\" subcommands and then create a new plan.",
+			"OpenTofu tried to adjust resource instance addresses in the prior state based on change information recorded in the configuration, but some adjustments did not succeed due to existing objects already at the intended addresses:%s\n\nOpenTofu has planned to destroy these objects. If OpenTofu's proposed changes aren't appropriate, you must first resolve the conflicts using the \"tofu state\" subcommands and then create a new plan.",
 			itemsBuf.String(),
 		),
 	)

@@ -111,7 +111,7 @@ func (m *Meta) loadSingleModuleWithTests(dir string, testDir string) (*configs.M
 }
 
 // dirIsConfigPath checks if the given path is a directory that contains at
-// least one Terraform configuration file (.tf or .tf.json), returning true
+// least one OpenTofu configuration file (.tf or .tf.json), returning true
 // if so.
 //
 // In the unlikely event that the underlying config loader cannot be initalized,
@@ -191,7 +191,7 @@ func (m *Meta) installModules(ctx context.Context, rootDir, testsDir string, upg
 
 	err := os.MkdirAll(m.modulesDir(), os.ModePerm)
 	if err != nil {
-		diags = diags.Append(fmt.Errorf("failed to create local modules directory: %s", err))
+		diags = diags.Append(fmt.Errorf("failed to create local modules directory: %w", err))
 		return true, diags
 	}
 
@@ -294,7 +294,7 @@ func (m *Meta) inputForSchema(given cty.Value, schema *configschema.Block) (cty.
 			val := cty.StringVal(strVal)
 			val, err = convert.Convert(val, attrS.Type)
 			if err != nil {
-				m.showDiagnostics(fmt.Errorf("Invalid value: %s", err))
+				m.showDiagnostics(fmt.Errorf("Invalid value: %w", err))
 				continue
 			}
 
@@ -348,7 +348,7 @@ func (m *Meta) registerSynthConfigSource(filename string, src []byte) {
 // If the loader cannot be created for some reason then an error is returned
 // and no loader is created. Subsequent calls will presumably see the same
 // error. Loader initialization errors will tend to prevent any further use
-// of most Terraform features, so callers should report any error and safely
+// of most OpenTofu features, so callers should report any error and safely
 // terminate.
 func (m *Meta) initConfigLoader() (*configload.Loader, error) {
 	if m.configLoader == nil {

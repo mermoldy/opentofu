@@ -30,7 +30,7 @@ import (
 
 func TestContext2Plan_removedDuringRefresh(t *testing.T) {
 	// This tests the situation where an object tracked in the previous run
-	// state has been deleted outside of Terraform, which we should detect
+	// state has been deleted outside OpenTofu, which we should detect
 	// during the refresh step and thus ultimately produce a plan to recreate
 	// the object, since it's still present in the configuration.
 	m := testModuleInline(t, map[string]string{
@@ -657,7 +657,7 @@ data "test_data_source" "a" {
 	//
 	// It could also potentially represent a similar situation where the
 	// previous apply succeeded but there has been a change outside of
-	// Terraform that made it invalid, although technically in that scenario
+	// OpenTofu that made it invalid, although technically in that scenario
 	// the state data would become invalid only during the planning step. For
 	// our purposes here that's close enough because we don't have a real
 	// remote system in place anyway.
@@ -736,7 +736,7 @@ data "test_data_source" "a" {
 func TestContext2Plan_managedResourceChecksOtherManagedResourceChange(t *testing.T) {
 	// This tests the incorrect situation where a managed resource checks
 	// another managed resource indirectly via a data resource.
-	// This doesn't work because Terraform can't tell that the data resource
+	// This doesn't work because OpenTofu can't tell that the data resource
 	// outcome will be updated by a separate managed resource change and so
 	// we expect it to fail.
 	// This would ideally have worked except that we previously included a
@@ -835,11 +835,11 @@ resource "test_resource" "a" {
 locals {
 	# NOTE: We intentionally read through a local value here because a
 	# direct reference from data.test_data_source.a to test_resource.a would
-	# cause Terraform to defer the data resource to the apply phase due to
+	# cause OpenTofu to defer the data resource to the apply phase due to
 	# there being a pending change for the managed resource. We're explicitly
 	# testing the failure case where the data resource read happens too
 	# eagerly, which is what results from the reference being only indirect
-	# so Terraform can't "see" that the data resource result might be affected
+	# so OpenTofu can't "see" that the data resource result might be affected
 	# by changes to the managed resource.
 	object_id = test_resource.a.id
 }
@@ -869,7 +869,7 @@ resource "test_resource" "b" {
 	//
 	// It could also potentially represent a similar situation where the
 	// previous apply succeeded but there has been a change outside of
-	// Terraform that made it invalid, although technically in that scenario
+	// OpenTofu that made it invalid, although technically in that scenario
 	// the state data would become invalid only during the planning step. For
 	// our purposes here that's close enough because we don't have a real
 	// remote system in place anyway.
@@ -1352,10 +1352,10 @@ func TestContext2Plan_movedResourceCollision(t *testing.T) {
 		tfdiags.Sourceless(
 			tfdiags.Warning,
 			"Unresolved resource instance address changes",
-			`OpenTF tried to adjust resource instance addresses in the prior state based on change information recorded in the configuration, but some adjustments did not succeed due to existing objects already at the intended addresses:
+			`OpenTofu tried to adjust resource instance addresses in the prior state based on change information recorded in the configuration, but some adjustments did not succeed due to existing objects already at the intended addresses:
   - test_object.a[0] could not move to test_object.a
 
-OpenTF has planned to destroy these objects. If OpenTF's proposed changes aren't appropriate, you must first resolve the conflicts using the "tofu state" subcommands and then create a new plan.`,
+OpenTofu has planned to destroy these objects. If OpenTofu's proposed changes aren't appropriate, you must first resolve the conflicts using the "tofu state" subcommands and then create a new plan.`,
 		),
 	}.ForRPC()
 	if diff := cmp.Diff(wantDiags, gotDiags); diff != "" {
@@ -1459,16 +1459,16 @@ func TestContext2Plan_movedResourceCollisionDestroy(t *testing.T) {
 			tfdiags.Warning,
 			"Unresolved resource instance address changes",
 			// NOTE: This message is _lightly_ confusing in the destroy case,
-			// because it says "OpenTF has planned to destroy these objects"
+			// because it says "OpenTofu has planned to destroy these objects"
 			// but this is a plan to destroy all objects, anyway. We expect the
 			// conflict situation to be pretty rare though, and even rarer in
 			// a "tofu destroy", so we'll just live with that for now
 			// unless we see evidence that lots of folks are being confused by
 			// it in practice.
-			`OpenTF tried to adjust resource instance addresses in the prior state based on change information recorded in the configuration, but some adjustments did not succeed due to existing objects already at the intended addresses:
+			`OpenTofu tried to adjust resource instance addresses in the prior state based on change information recorded in the configuration, but some adjustments did not succeed due to existing objects already at the intended addresses:
   - test_object.a[0] could not move to test_object.a
 
-OpenTF has planned to destroy these objects. If OpenTF's proposed changes aren't appropriate, you must first resolve the conflicts using the "tofu state" subcommands and then create a new plan.`,
+OpenTofu has planned to destroy these objects. If OpenTofu's proposed changes aren't appropriate, you must first resolve the conflicts using the "tofu state" subcommands and then create a new plan.`,
 		),
 	}.ForRPC()
 	if diff := cmp.Diff(wantDiags, gotDiags); diff != "" {
@@ -1573,12 +1573,12 @@ func TestContext2Plan_movedResourceUntargeted(t *testing.T) {
 				"Resource targeting is in effect",
 				`You are creating a plan with the -target option, which means that the result of this plan may not represent all of the changes requested by the current configuration.
 
-The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTF specifically suggests to use it as part of an error message.`,
+The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTofu specifically suggests to use it as part of an error message.`,
 			),
 			tfdiags.Sourceless(
 				tfdiags.Error,
 				"Moved resource instances excluded by targeting",
-				`Resource instances in your current state have moved to new addresses in the latest configuration. OpenTF must include those resource instances while planning in order to ensure a correct result, but your -target=... options do not fully cover all of those resource instances.
+				`Resource instances in your current state have moved to new addresses in the latest configuration. OpenTofu must include those resource instances while planning in order to ensure a correct result, but your -target=... options do not fully cover all of those resource instances.
 
 To create a valid plan, either remove your -target=... options altogether or add the following additional target options:
   -target="test_object.a"
@@ -1613,12 +1613,12 @@ Note that adding these options may include further additional resource instances
 				"Resource targeting is in effect",
 				`You are creating a plan with the -target option, which means that the result of this plan may not represent all of the changes requested by the current configuration.
 
-The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTF specifically suggests to use it as part of an error message.`,
+The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTofu specifically suggests to use it as part of an error message.`,
 			),
 			tfdiags.Sourceless(
 				tfdiags.Error,
 				"Moved resource instances excluded by targeting",
-				`Resource instances in your current state have moved to new addresses in the latest configuration. OpenTF must include those resource instances while planning in order to ensure a correct result, but your -target=... options do not fully cover all of those resource instances.
+				`Resource instances in your current state have moved to new addresses in the latest configuration. OpenTofu must include those resource instances while planning in order to ensure a correct result, but your -target=... options do not fully cover all of those resource instances.
 
 To create a valid plan, either remove your -target=... options altogether or add the following additional target options:
   -target="test_object.b"
@@ -1653,12 +1653,12 @@ Note that adding these options may include further additional resource instances
 				"Resource targeting is in effect",
 				`You are creating a plan with the -target option, which means that the result of this plan may not represent all of the changes requested by the current configuration.
 
-The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTF specifically suggests to use it as part of an error message.`,
+The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTofu specifically suggests to use it as part of an error message.`,
 			),
 			tfdiags.Sourceless(
 				tfdiags.Error,
 				"Moved resource instances excluded by targeting",
-				`Resource instances in your current state have moved to new addresses in the latest configuration. OpenTF must include those resource instances while planning in order to ensure a correct result, but your -target=... options do not fully cover all of those resource instances.
+				`Resource instances in your current state have moved to new addresses in the latest configuration. OpenTofu must include those resource instances while planning in order to ensure a correct result, but your -target=... options do not fully cover all of those resource instances.
 
 To create a valid plan, either remove your -target=... options altogether or add the following additional target options:
   -target="test_object.a"
@@ -1701,7 +1701,7 @@ Note that adding these options may include further additional resource instances
 				"Resource targeting is in effect",
 				`You are creating a plan with the -target option, which means that the result of this plan may not represent all of the changes requested by the current configuration.
 
-The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTF specifically suggests to use it as part of an error message.`,
+The -target option is not for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTofu specifically suggests to use it as part of an error message.`,
 			),
 			// ...but now we have no error about test_object.a
 		}.ForRPC()
@@ -3570,7 +3570,7 @@ output "a" {
 				t.Errorf("unexpected detail\ngot: %s\nwant to contain %q", got, want)
 			}
 		} else if desc.Summary == "Error message refers to sensitive values" {
-			if got, want := desc.Detail, "The error expression used to explain this condition refers to sensitive values, so OpenTF will not display the resulting message."; !strings.Contains(got, want) {
+			if got, want := desc.Detail, "The error expression used to explain this condition refers to sensitive values, so OpenTofu will not display the resulting message."; !strings.Contains(got, want) {
 				t.Errorf("unexpected detail\ngot: %s\nwant to contain %q", got, want)
 			}
 		} else {

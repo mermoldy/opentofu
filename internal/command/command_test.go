@@ -734,7 +734,7 @@ func testInputMap(t *testing.T, answers map[string]string) func() {
 //
 // If such a block isn't present, or if it isn't empty, then an error will
 // be returned about the backend configuration having changed and that
-// "terraform init" must be run, since the test backend config cache created
+// "tofu init" must be run, since the test backend config cache created
 // by this function contains the hash for an empty configuration.
 func testBackendState(t *testing.T, s *states.State, c int) (*legacy.State, *httptest.Server) {
 	t.Helper()
@@ -856,7 +856,7 @@ func testLockState(t *testing.T, sourceDir, path string) (func(), error) {
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("%s %s", err, out)
+		return nil, fmt.Errorf("%w %s", err, out)
 	}
 
 	locker := exec.Command(lockBin, path)
@@ -881,7 +881,7 @@ func testLockState(t *testing.T, sourceDir, path string) (func(), error) {
 	buf := make([]byte, 1024)
 	n, err := pr.Read(buf)
 	if err != nil {
-		return deferFunc, fmt.Errorf("read from statelocker returned: %s", err)
+		return deferFunc, fmt.Errorf("read from statelocker returned: %w", err)
 	}
 
 	output := string(buf[:n])
@@ -1117,11 +1117,11 @@ func checkGoldenReference(t *testing.T, output *terminal.TestOutput, fixturePath
 
 	// Verify that the log starts with a version message
 	type versionMessage struct {
-		Level   string `json:"@level"`
-		Message string `json:"@message"`
-		Type    string `json:"type"`
-		OpenTF  string `json:"opentf"`
-		UI      string `json:"ui"`
+		Level    string `json:"@level"`
+		Message  string `json:"@message"`
+		Type     string `json:"type"`
+		OpenTofu string `json:"tofu"`
+		UI       string `json:"ui"`
 	}
 	var gotVersion versionMessage
 	if err := json.Unmarshal([]byte(gotLines[0]), &gotVersion); err != nil {
@@ -1129,7 +1129,7 @@ func checkGoldenReference(t *testing.T, output *terminal.TestOutput, fixturePath
 	}
 	wantVersion := versionMessage{
 		"info",
-		fmt.Sprintf("OpenTF %s", version.String()),
+		fmt.Sprintf("OpenTofu %s", version.String()),
 		"version",
 		version.String(),
 		views.JSON_UI_VERSION,

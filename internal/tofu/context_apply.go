@@ -95,7 +95,7 @@ func (c *Context) Apply(plan *plans.Plan, config *configs.Config) (*states.State
 			`The plan was created with the -target option in effect, so some changes requested in the configuration may have been ignored and the output values may not be fully updated. Run the following command to verify that no other changes are pending:
     tofu plan
 	
-Note that the -target option is not suitable for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTF specifically suggests to use it as part of an error message.`,
+Note that the -target option is not suitable for routine use, and is provided only for exceptional situations such as recovering from errors or mistakes, or when OpenTofu specifically suggests to use it as part of an error message.`,
 		))
 	}
 
@@ -144,7 +144,7 @@ func (c *Context) applyGraph(plan *plans.Plan, config *configs.Config, validate 
 	// The plan.VariableValues field only records variables that were actually
 	// set by the caller in the PlanOpts, so we may need to provide
 	// placeholders for any other variables that the user didn't set, in
-	// which case Terraform will once again use the default value from the
+	// which case OpenTofu will once again use the default value from the
 	// configuration when we visit these variables during the graph walk.
 	for name := range config.Module.Variables {
 		if _, ok := variables[name]; ok {
@@ -189,12 +189,12 @@ func (c *Context) applyGraph(plan *plans.Plan, config *configs.Config, validate 
 
 // ApplyGraphForUI is a last vestage of graphs in the public interface of
 // Context (as opposed to graphs as an implementation detail) intended only for
-// use by the "terraform graph" command when asked to render an apply-time
+// use by the "tofu graph" command when asked to render an apply-time
 // graph.
 //
 // The result of this is intended only for rendering ot the user as a dot
 // graph, and so may change in future in order to make the result more useful
-// in that context, even if drifts away from the physical graph that Terraform
+// in that context, even if drifts away from the physical graph that OpenTofu
 // Core currently uses as an implementation detail of planning.
 func (c *Context) ApplyGraphForUI(plan *plans.Plan, config *configs.Config) (*Graph, tfdiags.Diagnostics) {
 	// For now though, this really is just the internal graph, confusing
