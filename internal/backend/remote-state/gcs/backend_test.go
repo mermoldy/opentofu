@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package gcs
@@ -16,6 +18,7 @@ import (
 	kms "cloud.google.com/go/kms/apiv1"
 	"cloud.google.com/go/storage"
 	"github.com/opentofu/opentofu/internal/backend"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/httpclient"
 	"github.com/opentofu/opentofu/internal/states/remote"
 	"github.com/opentofu/opentofu/version"
@@ -79,7 +82,7 @@ func TestRemoteClient(t *testing.T) {
 	be := setupBackend(t, bucket, noPrefix, noEncryptionKey, noKmsKeyName)
 	defer teardownBackend(t, be, noPrefix)
 
-	ss, err := be.StateMgr(backend.DefaultStateName)
+	ss, err := be.StateMgr(t.Context(), backend.DefaultStateName)
 	if err != nil {
 		t.Fatalf("be.StateMgr(%q) = %v", backend.DefaultStateName, err)
 	}
@@ -98,7 +101,7 @@ func TestRemoteClientWithEncryption(t *testing.T) {
 	be := setupBackend(t, bucket, noPrefix, encryptionKey, noKmsKeyName)
 	defer teardownBackend(t, be, noPrefix)
 
-	ss, err := be.StateMgr(backend.DefaultStateName)
+	ss, err := be.StateMgr(t.Context(), backend.DefaultStateName)
 	if err != nil {
 		t.Fatalf("be.StateMgr(%q) = %v", backend.DefaultStateName, err)
 	}
@@ -119,7 +122,7 @@ func TestRemoteLocks(t *testing.T) {
 	defer teardownBackend(t, be, noPrefix)
 
 	remoteClient := func() (remote.Client, error) {
-		ss, err := be.StateMgr(backend.DefaultStateName)
+		ss, err := be.StateMgr(t.Context(), backend.DefaultStateName)
 		if err != nil {
 			return nil, err
 		}
@@ -236,7 +239,7 @@ func setupBackend(t *testing.T, bucket, prefix, key, kmsName string) backend.Bac
 		config["kms_encryption_key"] = kmsName
 	}
 
-	b := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(config))
+	b := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(config))
 	be := b.(*Backend)
 
 	// create the bucket if it doesn't exist

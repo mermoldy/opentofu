@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package cloud
@@ -59,8 +61,7 @@ func newMockIntegrationContext(b *Cloud, t *testing.T) (*IntegrationContext, *te
 		t.Fatalf("error creating pending run: %v", err)
 	}
 
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 	defer done(t)
 
 	integrationContext := &IntegrationContext{

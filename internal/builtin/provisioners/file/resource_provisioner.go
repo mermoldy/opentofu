@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package file
@@ -7,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/mitchellh/go-homedir"
@@ -147,7 +150,7 @@ func getSrc(v cty.Value) (string, bool, error) {
 		return expansion, false, err
 
 	default:
-		panic("source and content cannot both be null")
+		return "", false, errors.New("source and content cannot both be null")
 	}
 }
 
@@ -168,7 +171,9 @@ func copyFiles(ctx context.Context, comm communicator.Communicator, src, dst str
 	// Apply as well.
 	go func() {
 		<-ctx.Done()
-		comm.Disconnect()
+		if err := comm.Disconnect(); err != nil {
+			log.Printf("[ERROR] Unable to close provisioner connection: %s", err.Error())
+		}
 	}()
 
 	info, err := os.Stat(src)

@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
@@ -29,13 +31,22 @@ func TestEvaluatorGetTerraformAttr(t *testing.T) {
 	data := &evaluationStateData{
 		Evaluator: evaluator,
 	}
-	scope := evaluator.Scope(data, nil, nil)
+	scope := evaluator.Scope(data, nil, nil, nil)
 
-	t.Run("workspace", func(t *testing.T) {
+	t.Run("terraform.workspace", func(t *testing.T) {
 		want := cty.StringVal("foo")
-		got, diags := scope.Data.GetTerraformAttr(addrs.TerraformAttr{
-			Name: "workspace",
-		}, tfdiags.SourceRange{})
+		got, diags := scope.Data.GetTerraformAttr(addrs.NewTerraformAttr("terraform", "workspace"), tfdiags.SourceRange{})
+		if len(diags) != 0 {
+			t.Errorf("unexpected diagnostics %s", spew.Sdump(diags))
+		}
+		if !got.RawEquals(want) {
+			t.Errorf("wrong result %q; want %q", got, want)
+		}
+	})
+
+	t.Run("tofu.workspace", func(t *testing.T) {
+		want := cty.StringVal("foo")
+		got, diags := scope.Data.GetTerraformAttr(addrs.NewTerraformAttr("tofu", "workspace"), tfdiags.SourceRange{})
 		if len(diags) != 0 {
 			t.Errorf("unexpected diagnostics %s", spew.Sdump(diags))
 		}
@@ -59,7 +70,7 @@ func TestEvaluatorGetPathAttr(t *testing.T) {
 	data := &evaluationStateData{
 		Evaluator: evaluator,
 	}
-	scope := evaluator.Scope(data, nil, nil)
+	scope := evaluator.Scope(data, nil, nil, nil)
 
 	t.Run("module", func(t *testing.T) {
 		want := cty.StringVal("bar/baz")
@@ -112,20 +123,20 @@ func TestEvaluatorGetOutputValue(t *testing.T) {
 				OutputValue: addrs.OutputValue{
 					Name: "some_output",
 				},
-			}, cty.StringVal("first"), true)
+			}, cty.StringVal("first"), true, "")
 			state.SetOutputValue(addrs.AbsOutputValue{
 				Module: addrs.RootModuleInstance,
 				OutputValue: addrs.OutputValue{
 					Name: "some_other_output",
 				},
-			}, cty.StringVal("second"), false)
+			}, cty.StringVal("second"), false, "")
 		}).SyncWrapper(),
 	}
 
 	data := &evaluationStateData{
 		Evaluator: evaluator,
 	}
-	scope := evaluator.Scope(data, nil, nil)
+	scope := evaluator.Scope(data, nil, nil, nil)
 
 	want := cty.StringVal("first").Mark(marks.Sensitive)
 	got, diags := scope.Data.GetOutput(addrs.OutputValue{
@@ -192,7 +203,7 @@ func TestEvaluatorGetInputVariable(t *testing.T) {
 	data := &evaluationStateData{
 		Evaluator: evaluator,
 	}
-	scope := evaluator.Scope(data, nil, nil)
+	scope := evaluator.Scope(data, nil, nil, nil)
 
 	want := cty.StringVal("bar").Mark(marks.Sensitive)
 	got, diags := scope.Data.GetInputVariable(addrs.InputVariable{
@@ -235,6 +246,7 @@ func TestEvaluatorGetResource(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	}).SyncWrapper()
 
@@ -336,13 +348,13 @@ func TestEvaluatorGetResource(t *testing.T) {
 					},
 				},
 			},
-		}),
+		}, t),
 	}
 
 	data := &evaluationStateData{
 		Evaluator: evaluator,
 	}
-	scope := evaluator.Scope(data, nil, nil)
+	scope := evaluator.Scope(data, nil, nil, nil)
 
 	want := cty.ObjectVal(map[string]cty.Value{
 		"id": cty.StringVal("foo"),
@@ -409,6 +421,7 @@ func TestEvaluatorGetResource_changes(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	}).SyncWrapper()
 
@@ -502,13 +515,13 @@ func TestEvaluatorGetResource_changes(t *testing.T) {
 			},
 		},
 		State:   stateSync,
-		Plugins: schemaOnlyProvidersForTesting(schemas.Providers),
+		Plugins: schemaOnlyProvidersForTesting(schemas.Providers, t),
 	}
 
 	data := &evaluationStateData{
 		Evaluator: evaluator,
 	}
-	scope := evaluator.Scope(data, nil, nil)
+	scope := evaluator.Scope(data, nil, nil, nil)
 
 	want := cty.ObjectVal(map[string]cty.Value{
 		"id":              cty.StringVal("foo"),
@@ -537,13 +550,14 @@ func TestEvaluatorGetModule(t *testing.T) {
 			addrs.OutputValue{Name: "out"}.Absolute(addrs.ModuleInstance{addrs.ModuleInstanceStep{Name: "mod"}}),
 			cty.StringVal("bar"),
 			true,
+			"",
 		)
 	}).SyncWrapper()
 	evaluator := evaluatorForModule(stateSync, plans.NewChanges().SyncWrapper())
 	data := &evaluationStateData{
 		Evaluator: evaluator,
 	}
-	scope := evaluator.Scope(data, nil, nil)
+	scope := evaluator.Scope(data, nil, nil, nil)
 	want := cty.ObjectVal(map[string]cty.Value{"out": cty.StringVal("bar").Mark(marks.Sensitive)})
 	got, diags := scope.Data.GetModule(addrs.ModuleCall{
 		Name: "mod",
@@ -571,7 +585,7 @@ func TestEvaluatorGetModule(t *testing.T) {
 	data = &evaluationStateData{
 		Evaluator: evaluator,
 	}
-	scope = evaluator.Scope(data, nil, nil)
+	scope = evaluator.Scope(data, nil, nil, nil)
 	want = cty.ObjectVal(map[string]cty.Value{"out": cty.StringVal("baz").Mark(marks.Sensitive)})
 	got, diags = scope.Data.GetModule(addrs.ModuleCall{
 		Name: "mod",
@@ -589,7 +603,7 @@ func TestEvaluatorGetModule(t *testing.T) {
 	data = &evaluationStateData{
 		Evaluator: evaluator,
 	}
-	scope = evaluator.Scope(data, nil, nil)
+	scope = evaluator.Scope(data, nil, nil, nil)
 	want = cty.ObjectVal(map[string]cty.Value{"out": cty.StringVal("baz").Mark(marks.Sensitive)})
 	got, diags = scope.Data.GetModule(addrs.ModuleCall{
 		Name: "mod",

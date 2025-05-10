@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package registry
@@ -20,10 +22,15 @@ import (
 	"github.com/hashicorp/go-retryablehttp"
 	svchost "github.com/hashicorp/terraform-svchost"
 	"github.com/hashicorp/terraform-svchost/disco"
+	otelAttr "go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/opentofu/opentofu/internal/httpclient"
 	"github.com/opentofu/opentofu/internal/logging"
 	"github.com/opentofu/opentofu/internal/registry/regsrc"
 	"github.com/opentofu/opentofu/internal/registry/response"
+	"github.com/opentofu/opentofu/internal/tracing"
+	"github.com/opentofu/opentofu/internal/tracing/traceattrs"
 	"github.com/opentofu/opentofu/version"
 )
 
@@ -61,7 +68,7 @@ func init() {
 	configureRequestTimeout()
 }
 
-// Client provides methods to query Terraform Registries.
+// Client provides methods to query OpenTofu Registries.
 type Client struct {
 	// this is the client to be used for all requests.
 	client *retryablehttp.Client
@@ -72,13 +79,13 @@ type Client struct {
 }
 
 // NewClient returns a new initialized registry client.
-func NewClient(services *disco.Disco, client *http.Client) *Client {
+func NewClient(ctx context.Context, services *disco.Disco, client *http.Client) *Client {
 	if services == nil {
 		services = disco.New()
 	}
 
 	if client == nil {
-		client = httpclient.New()
+		client = httpclient.New(ctx)
 		client.Timeout = requestTimeout
 	}
 	retryableClient := retryablehttp.NewClient()
@@ -114,6 +121,13 @@ func (c *Client) Discover(host svchost.Hostname, serviceID string) (*url.URL, er
 
 // ModuleVersions queries the registry for a module, and returns the available versions.
 func (c *Client) ModuleVersions(ctx context.Context, module *regsrc.Module) (*response.ModuleVersions, error) {
+	ctx, span := tracing.Tracer().Start(ctx, "List Versions",
+		trace.WithAttributes(
+			otelAttr.String("opentofu.module.name", module.RawName),
+		),
+	)
+	defer span.End()
+
 	host, err := module.SvcHost()
 	if err != nil {
 		return nil, err
@@ -133,7 +147,7 @@ func (c *Client) ModuleVersions(ctx context.Context, module *regsrc.Module) (*re
 
 	log.Printf("[DEBUG] fetching module versions from %q", service)
 
-	req, err := retryablehttp.NewRequest("GET", service.String(), nil)
+	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", service.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +180,7 @@ func (c *Client) ModuleVersions(ctx context.Context, module *regsrc.Module) (*re
 
 	for _, mod := range versions.Modules {
 		for _, v := range mod.Versions {
-			log.Printf("[DEBUG] found available version %q for %s", v.Version, mod.Source)
+			log.Printf("[DEBUG] found available version %q for %s", v.Version, module.Module())
 		}
 	}
 
@@ -188,6 +202,15 @@ func (c *Client) addRequestCreds(host svchost.Hostname, req *http.Request) {
 // ModuleLocation find the download location for a specific version module.
 // This returns a string, because the final location may contain special go-getter syntax.
 func (c *Client) ModuleLocation(ctx context.Context, module *regsrc.Module, version string) (string, error) {
+	ctx, span := tracing.Tracer().Start(ctx, "Find Module Location",
+		trace.WithAttributes(
+			otelAttr.String(traceattrs.ModuleCallName, module.RawName),
+			otelAttr.String(traceattrs.ModuleSource, module.Module()),
+			otelAttr.String(traceattrs.ModuleVersion, version),
+		),
+	)
+	defer span.End()
+
 	host, err := module.SvcHost()
 	if err != nil {
 		return "", err
@@ -211,7 +234,7 @@ func (c *Client) ModuleLocation(ctx context.Context, module *regsrc.Module, vers
 
 	log.Printf("[DEBUG] looking up module location from %q", download)
 
-	req, err := retryablehttp.NewRequest("GET", download.String(), nil)
+	req, err := retryablehttp.NewRequestWithContext(ctx, "GET", download.String(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -227,24 +250,40 @@ func (c *Client) ModuleLocation(ctx context.Context, module *regsrc.Module, vers
 	}
 	defer resp.Body.Close()
 
-	// there should be no body, but save it for logging
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("error reading response body from registry: %w", err)
 	}
 
+	var location string
+
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusNoContent:
-		// OK
+	case http.StatusOK:
+		var v response.ModuleLocationRegistryResp
+		if err := json.Unmarshal(body, &v); err != nil {
+			return "", fmt.Errorf("module %q version %q failed to deserialize response body %s: %w",
+				module, version, body, err)
+		}
+
+		location = v.Location
+
+		// if the location is empty, we will fallback to the header
+		if location == "" {
+			location = resp.Header.Get(xTerraformGet)
+		}
+
+	case http.StatusNoContent:
+		// FALLBACK: set the found location from the header
+		location = resp.Header.Get(xTerraformGet)
+
 	case http.StatusNotFound:
 		return "", fmt.Errorf("module %q version %q not found", module, version)
+
 	default:
 		// anything else is an error:
 		return "", fmt.Errorf("error getting download location for %q: %s resp:%s", module, resp.Status, body)
 	}
 
-	// the download location is in the X-Terraform-Get header
-	location := resp.Header.Get(xTerraformGet)
 	if location == "" {
 		return "", fmt.Errorf("failed to get download URL for %q: %s resp:%s", module, resp.Status, body)
 	}

@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
@@ -14,6 +16,7 @@ import (
 	"github.com/opentofu/opentofu/internal/command/arguments"
 	"github.com/opentofu/opentofu/internal/command/clistate"
 	"github.com/opentofu/opentofu/internal/command/views"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/states/statefile"
 	"github.com/opentofu/opentofu/internal/states/statemgr"
 	"github.com/opentofu/opentofu/internal/tfdiags"
@@ -27,6 +30,7 @@ type StatePushCommand struct {
 }
 
 func (c *StatePushCommand) Run(args []string) int {
+	ctx := c.CommandContext()
 	args = c.Meta.process(args)
 	var flagForce bool
 	cmdFlags := c.Meta.ignoreRemoteVersionFlagSet("state push")
@@ -44,8 +48,15 @@ func (c *StatePushCommand) Run(args []string) int {
 		return cli.RunResultHelp
 	}
 
-	if diags := c.Meta.checkRequiredVersion(); diags != nil {
+	if diags := c.Meta.checkRequiredVersion(ctx); diags != nil {
 		c.showDiagnostics(diags)
+		return 1
+	}
+
+	// Load the encryption configuration
+	enc, encDiags := c.Encryption(ctx)
+	if encDiags.HasErrors() {
+		c.showDiagnostics(encDiags)
 		return 1
 	}
 
@@ -66,7 +77,7 @@ func (c *StatePushCommand) Run(args []string) int {
 	}
 
 	// Read the state
-	srcStateFile, err := statefile.Read(r)
+	srcStateFile, err := statefile.Read(r, encryption.StateEncryptionDisabled()) // Assume the given statefile is not encrypted
 	if c, ok := r.(io.Closer); ok {
 		// Close the reader if possible right now since we're done with it.
 		c.Close()
@@ -77,20 +88,20 @@ func (c *StatePushCommand) Run(args []string) int {
 	}
 
 	// Load the backend
-	b, backendDiags := c.Backend(nil)
+	b, backendDiags := c.Backend(ctx, nil, enc.State())
 	if backendDiags.HasErrors() {
 		c.showDiagnostics(backendDiags)
 		return 1
 	}
 
 	// Determine the workspace name
-	workspace, err := c.Workspace()
+	workspace, err := c.Workspace(ctx)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Error selecting workspace: %s", err))
 		return 1
 	}
 
-	// Check remote Terraform version is compatible
+	// Check remote OpenTofu version is compatible
 	remoteVersionDiags := c.remoteVersionCheck(b, workspace)
 	c.showDiagnostics(remoteVersionDiags)
 	if remoteVersionDiags.HasErrors() {
@@ -98,7 +109,7 @@ func (c *StatePushCommand) Run(args []string) int {
 	}
 
 	// Get the state manager for the currently-selected workspace
-	stateMgr, err := b.StateMgr(workspace)
+	stateMgr, err := b.StateMgr(ctx, workspace)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to load destination state: %s", err))
 		return 1
@@ -137,7 +148,7 @@ func (c *StatePushCommand) Run(args []string) int {
 	var schemas *tofu.Schemas
 	var diags tfdiags.Diagnostics
 	if isCloudMode(b) {
-		schemas, diags = c.MaybeGetSchemas(srcStateFile.State, nil)
+		schemas, diags = c.MaybeGetSchemas(ctx, srcStateFile.State, nil)
 	}
 
 	if err := stateMgr.WriteState(srcStateFile.State); err != nil {
@@ -181,6 +192,15 @@ Options:
                       against the same workspace.
 
   -lock-timeout=0s    Duration to retry a state lock.
+
+  -var 'foo=bar'      Set a value for one of the input variables in the root
+                      module of the configuration. Use this option more than
+                      once to set more than one variable.
+
+  -var-file=filename  Load variable values from the given file, in addition
+                      to the default files terraform.tfvars and *.auto.tfvars.
+                      Use this option more than once to include more than one
+                      variables file.
 
 `
 	return strings.TrimSpace(helpText)

@@ -1,3 +1,8 @@
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -10,18 +15,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/google/go-cmp/cmp"
+	"github.com/hashicorp/go-version"
 	"github.com/mitchellh/cli"
 	"github.com/zclconf/go-cty/cty"
-
-	"github.com/hashicorp/go-version"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/configs/configschema"
 	"github.com/opentofu/opentofu/internal/depsfile"
+	"github.com/opentofu/opentofu/internal/encryption"
+	"github.com/opentofu/opentofu/internal/getmodules"
 	"github.com/opentofu/opentofu/internal/getproviders"
 	"github.com/opentofu/opentofu/internal/providercache"
 	"github.com/opentofu/opentofu/internal/states"
@@ -33,7 +40,7 @@ func TestInit_empty(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -55,7 +62,7 @@ func TestInit_multipleArgs(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -80,7 +87,7 @@ func TestInit_fromModule_cwdDest(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	os.MkdirAll(td, os.ModePerm)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -89,6 +96,12 @@ func TestInit_fromModule_cwdDest(t *testing.T) {
 			testingOverrides: metaOverridesForProvider(testProvider()),
 			Ui:               ui,
 			View:             view,
+
+			// This test relies on the module installer's legacy support for
+			// treating an absolute filesystem path as if it were a "remote"
+			// source address, and so we need a real package fetcher but the
+			// way we use it here does not cause it to make network requests.
+			ModulePackageFetcher: getmodules.NewPackageFetcher(t.Context(), nil),
 		},
 	}
 
@@ -96,7 +109,7 @@ func TestInit_fromModule_cwdDest(t *testing.T) {
 		"-from-module=" + testFixturePath("init"),
 	}
 	if code := c.Run(args); code != 0 {
-		t.Fatalf("bad: \n%s", ui.ErrorWriter.String())
+		t.Fatalf("unexpected error\n%s", ui.ErrorWriter.String())
 	}
 
 	if _, err := os.Stat(filepath.Join(td, "hello.tf")); err != nil {
@@ -107,31 +120,14 @@ func TestInit_fromModule_cwdDest(t *testing.T) {
 // https://github.com/hashicorp/terraform/issues/518
 func TestInit_fromModule_dstInSrc(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatalf("err: %s", err)
-	}
-
-	// Change to the temporary directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	defer os.Chdir(cwd)
-
+	t.Chdir(dir)
 	if err := os.Mkdir("foo", os.ModePerm); err != nil {
 		t.Fatal(err)
 	}
-
 	if _, err := os.Create("issue518.tf"); err != nil {
 		t.Fatalf("err: %s", err)
 	}
-
-	if err := os.Chdir("foo"); err != nil {
-		t.Fatalf("err: %s", err)
-	}
+	t.Chdir("foo")
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -140,6 +136,12 @@ func TestInit_fromModule_dstInSrc(t *testing.T) {
 			testingOverrides: metaOverridesForProvider(testProvider()),
 			Ui:               ui,
 			View:             view,
+
+			// This test relies on the module installer's legacy support for
+			// treating an absolute filesystem path as if it were a "remote"
+			// source address, and so we need a real package fetcher but the
+			// way we use it here does not cause it to make network requests.
+			ModulePackageFetcher: getmodules.NewPackageFetcher(t.Context(), nil),
 		},
 	}
 
@@ -159,7 +161,7 @@ func TestInit_get(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -187,7 +189,7 @@ func TestInit_getUpgradeModules(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -218,7 +220,7 @@ func TestInit_backend(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -244,7 +246,7 @@ func TestInit_backendUnset(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	{
 		log.Printf("[TRACE] TestInit_backendUnset: beginning first init")
@@ -310,7 +312,7 @@ func TestInit_backendConfigFile(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend-config-file"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	t.Run("good-config-file", func(t *testing.T) {
 		ui := new(cli.MockUi)
@@ -446,7 +448,7 @@ func TestInit_backendConfigFilePowershellConfusion(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend-config-file"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -465,7 +467,7 @@ func TestInit_backendConfigFilePowershellConfusion(t *testing.T) {
 	//
 	// Adding the "=" here forces this codepath to be checked, and it should
 	// result in an early exit with a diagnostic that the provided
-	// configuration file is not a diretory.
+	// configuration file is not a directory.
 	args := []string{"-backend-config=", "./input.config"}
 	if code := c.Run(args); code != 1 {
 		t.Fatalf("got exit status %d; want 1\nstderr:\n%s\n\nstdout:\n%s", code, ui.ErrorWriter.String(), ui.OutputWriter.String())
@@ -481,7 +483,7 @@ func TestInit_backendReconfigure(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	providerSource, close := newMockProviderSource(t, map[string][]string{
 		"hashicorp/test": {"1.2.3"},
@@ -528,7 +530,7 @@ func TestInit_backendConfigFileChange(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend-config-file-change"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -556,7 +558,7 @@ func TestInit_backendMigrateWhileLocked(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend-migrate-while-locked"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	providerSource, close := newMockProviderSource(t, map[string][]string{
 		"hashicorp/test": {"1.2.3"},
@@ -609,7 +611,7 @@ func TestInit_backendConfigFileChangeWithExistingState(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend-config-file-change-migrate-existing"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	c := &InitCommand{
@@ -643,7 +645,7 @@ func TestInit_backendConfigKV(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend-config-kv"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -671,7 +673,7 @@ func TestInit_backendConfigKVReInit(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend-config-kv"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -734,7 +736,7 @@ func TestInit_backendConfigKVReInitWithConfigDiff(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -782,7 +784,7 @@ func TestInit_backendCli_no_config_block(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -808,7 +810,7 @@ func TestInit_backendCli_no_config_block(t *testing.T) {
 func TestInit_backendReinitWithExtra(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend-empty"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	m := testMetaBackend(t, nil)
 	opts := &BackendOpts{
@@ -818,7 +820,7 @@ func TestInit_backendReinitWithExtra(t *testing.T) {
 		Init: true,
 	}
 
-	_, cHash, err := m.backendConfig(opts)
+	_, cHash, err := m.backendConfig(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -865,7 +867,7 @@ func TestInit_backendReinitWithExtra(t *testing.T) {
 func TestInit_backendReinitConfigToExtra(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -926,17 +928,16 @@ func TestInit_backendCloudInvalidOptions(t *testing.T) {
 	// just silently ignoring them, so that users will be aware that
 	// Cloud mode has more of an expected "happy path" than the
 	// less-vertically-integrated backends do, and to avoid these
-	// unapplicable options becoming compatibility constraints for
+	// inapplicable options becoming compatibility constraints for
 	// future evolution of Cloud mode.
 
 	// We use the same starting fixture for all of these tests, but some
 	// of them will customize it a bit as part of their work.
-	setupTempDir := func(t *testing.T) func() {
+	setupTempDir := func(t *testing.T) {
 		t.Helper()
 		td := t.TempDir()
 		testCopyDir(t, testFixturePath("init-cloud-simple"), td)
-		unChdir := testChdir(t, td)
-		return unChdir
+		t.Chdir(td)
 	}
 
 	// Some of the tests need a non-empty placeholder state file to work
@@ -949,6 +950,7 @@ func TestInit_backendCloudInvalidOptions(t *testing.T) {
 			addrs.OutputValue{Name: "a"}.Absolute(addrs.RootModuleInstance),
 			cty.True,
 			false,
+			"",
 		)
 	})
 	fakeStateFile := &statefile.File{
@@ -965,7 +967,7 @@ func TestInit_backendCloudInvalidOptions(t *testing.T) {
 	fakeStateBytes := fakeStateBuf.Bytes()
 
 	t.Run("-backend-config", func(t *testing.T) {
-		defer setupTempDir(t)()
+		setupTempDir(t)
 
 		// We have -backend-config as a pragmatic way to dynamically set
 		// certain settings of backends that tend to vary depending on
@@ -994,7 +996,7 @@ func TestInit_backendCloudInvalidOptions(t *testing.T) {
 Error: Invalid command-line option
 
 The -backend-config=... command line option is only for state backends, and
-is not applicable to Terraform Cloud-based configurations.
+is not applicable to cloud backend-based configurations.
 
 To change the set of workspaces associated with this configuration, edit the
 Cloud configuration block in the root module.
@@ -1005,7 +1007,7 @@ Cloud configuration block in the root module.
 		}
 	})
 	t.Run("-reconfigure", func(t *testing.T) {
-		defer setupTempDir(t)()
+		setupTempDir(t)
 
 		// The -reconfigure option was originally imagined as a way to force
 		// skipping state migration when migrating between backends, but it
@@ -1033,9 +1035,9 @@ Cloud configuration block in the root module.
 Error: Invalid command-line option
 
 The -reconfigure option is for in-place reconfiguration of state backends
-only, and is not needed when changing Terraform Cloud settings.
+only, and is not needed when changing cloud backend settings.
 
-When using Terraform Cloud, initialization automatically activates any new
+When using cloud backend, initialization automatically activates any new
 Cloud configuration settings.
 
 `
@@ -1044,7 +1046,7 @@ Cloud configuration settings.
 		}
 	})
 	t.Run("-reconfigure when migrating in", func(t *testing.T) {
-		defer setupTempDir(t)()
+		setupTempDir(t)
 
 		// We have a slightly different error message for the case where we
 		// seem to be trying to migrate to Terraform Cloud with existing
@@ -1071,8 +1073,8 @@ Cloud configuration settings.
 		wantStderr := `
 Error: Invalid command-line option
 
-The -reconfigure option is unsupported when migrating to Terraform Cloud,
-because activating Terraform Cloud involves some additional steps.
+The -reconfigure option is unsupported when migrating to cloud backend,
+because activating cloud backend involves some additional steps.
 
 `
 		if diff := cmp.Diff(wantStderr, gotStderr); diff != "" {
@@ -1080,7 +1082,7 @@ because activating Terraform Cloud involves some additional steps.
 		}
 	})
 	t.Run("-migrate-state", func(t *testing.T) {
-		defer setupTempDir(t)()
+		setupTempDir(t)
 
 		// In Cloud mode, migrating in or out always proposes migrating state
 		// and changing configuration while staying in cloud mode never migrates
@@ -1103,9 +1105,9 @@ because activating Terraform Cloud involves some additional steps.
 Error: Invalid command-line option
 
 The -migrate-state option is for migration between state backends only, and
-is not applicable when using Terraform Cloud.
+is not applicable when using cloud backend.
 
-State storage is handled automatically by Terraform Cloud and so the state
+State storage is handled automatically by cloud backend and so the state
 storage location is not configurable.
 
 `
@@ -1114,7 +1116,7 @@ storage location is not configurable.
 		}
 	})
 	t.Run("-migrate-state when migrating in", func(t *testing.T) {
-		defer setupTempDir(t)()
+		setupTempDir(t)
 
 		// We have a slightly different error message for the case where we
 		// seem to be trying to migrate to Terraform Cloud with existing
@@ -1142,9 +1144,9 @@ storage location is not configurable.
 Error: Invalid command-line option
 
 The -migrate-state option is for migration between state backends only, and
-is not applicable when using Terraform Cloud.
+is not applicable when using cloud backend.
 
-Terraform Cloud migration has additional steps, configured by interactive
+Cloud backend migration has additional steps, configured by interactive
 prompts.
 
 `
@@ -1153,7 +1155,7 @@ prompts.
 		}
 	})
 	t.Run("-force-copy", func(t *testing.T) {
-		defer setupTempDir(t)()
+		setupTempDir(t)
 
 		// In Cloud mode, migrating in or out always proposes migrating state
 		// and changing configuration while staying in cloud mode never migrates
@@ -1176,9 +1178,9 @@ prompts.
 Error: Invalid command-line option
 
 The -force-copy option is for migration between state backends only, and is
-not applicable when using Terraform Cloud.
+not applicable when using cloud backend.
 
-State storage is handled automatically by Terraform Cloud and so the state
+State storage is handled automatically by cloud backend and so the state
 storage location is not configurable.
 
 `
@@ -1187,7 +1189,7 @@ storage location is not configurable.
 		}
 	})
 	t.Run("-force-copy when migrating in", func(t *testing.T) {
-		defer setupTempDir(t)()
+		setupTempDir(t)
 
 		// We have a slightly different error message for the case where we
 		// seem to be trying to migrate to Terraform Cloud with existing
@@ -1215,9 +1217,9 @@ storage location is not configurable.
 Error: Invalid command-line option
 
 The -force-copy option is for migration between state backends only, and is
-not applicable when using Terraform Cloud.
+not applicable when using cloud backend.
 
-Terraform Cloud migration has additional steps, configured by interactive
+Cloud backend migration has additional steps, configured by interactive
 prompts.
 
 `
@@ -1232,7 +1234,7 @@ prompts.
 func TestInit_inputFalse(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-backend"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := new(cli.MockUi)
 	view, _ := testView(t)
@@ -1255,9 +1257,10 @@ func TestInit_inputFalse(t *testing.T) {
 			addrs.OutputValue{Name: "foo"}.Absolute(addrs.RootModuleInstance),
 			cty.StringVal("foo"),
 			false, // not sensitive
+			"",
 		)
 	})
-	if err := statemgr.NewFilesystem("foo").WriteState(fooState); err != nil {
+	if err := statemgr.WriteAndPersist(statemgr.NewFilesystem("foo", encryption.StateEncryptionDisabled()), fooState, nil); err != nil {
 		t.Fatal(err)
 	}
 	barState := states.BuildState(func(s *states.SyncState) {
@@ -1265,9 +1268,10 @@ func TestInit_inputFalse(t *testing.T) {
 			addrs.OutputValue{Name: "bar"}.Absolute(addrs.RootModuleInstance),
 			cty.StringVal("bar"),
 			false, // not sensitive
+			"",
 		)
 	})
-	if err := statemgr.NewFilesystem("bar").WriteState(barState); err != nil {
+	if err := statemgr.WriteAndPersist(statemgr.NewFilesystem("bar", encryption.StateEncryptionDisabled()), barState, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1310,7 +1314,7 @@ func TestInit_getProvider(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get-providers"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	overrides := metaOverridesForProvider(testProvider())
 	ui := new(cli.MockUi)
@@ -1343,15 +1347,15 @@ func TestInit_getProvider(t *testing.T) {
 	}
 
 	// check that we got the providers for our config
-	exactPath := fmt.Sprintf(".terraform/providers/registry.terraform.io/hashicorp/exact/1.2.3/%s", getproviders.CurrentPlatform)
+	exactPath := fmt.Sprintf(".terraform/providers/registry.opentofu.org/hashicorp/exact/1.2.3/%s", getproviders.CurrentPlatform)
 	if _, err := os.Stat(exactPath); os.IsNotExist(err) {
 		t.Fatal("provider 'exact' not downloaded")
 	}
-	greaterThanPath := fmt.Sprintf(".terraform/providers/registry.terraform.io/hashicorp/greater-than/2.3.4/%s", getproviders.CurrentPlatform)
+	greaterThanPath := fmt.Sprintf(".terraform/providers/registry.opentofu.org/hashicorp/greater-than/2.3.4/%s", getproviders.CurrentPlatform)
 	if _, err := os.Stat(greaterThanPath); os.IsNotExist(err) {
 		t.Fatal("provider 'greater-than' not downloaded")
 	}
-	betweenPath := fmt.Sprintf(".terraform/providers/registry.terraform.io/hashicorp/between/2.3.4/%s", getproviders.CurrentPlatform)
+	betweenPath := fmt.Sprintf(".terraform/providers/registry.opentofu.org/hashicorp/between/2.3.4/%s", getproviders.CurrentPlatform)
 	if _, err := os.Stat(betweenPath); os.IsNotExist(err) {
 		t.Fatal("provider 'between' not downloaded")
 	}
@@ -1415,7 +1419,7 @@ func TestInit_getProviderSource(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get-provider-source"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	overrides := metaOverridesForProvider(testProvider())
 	ui := new(cli.MockUi)
@@ -1447,7 +1451,7 @@ func TestInit_getProviderSource(t *testing.T) {
 	}
 
 	// check that we got the providers for our config
-	exactPath := fmt.Sprintf(".terraform/providers/registry.terraform.io/acme/alpha/1.2.3/%s", getproviders.CurrentPlatform)
+	exactPath := fmt.Sprintf(".terraform/providers/registry.opentofu.org/acme/alpha/1.2.3/%s", getproviders.CurrentPlatform)
 	if _, err := os.Stat(exactPath); os.IsNotExist(err) {
 		t.Error("provider 'alpha' not downloaded")
 	}
@@ -1455,7 +1459,7 @@ func TestInit_getProviderSource(t *testing.T) {
 	if _, err := os.Stat(greaterThanPath); os.IsNotExist(err) {
 		t.Error("provider 'beta' not downloaded")
 	}
-	betweenPath := fmt.Sprintf(".terraform/providers/registry.terraform.io/hashicorp/gamma/2.0.0/%s", getproviders.CurrentPlatform)
+	betweenPath := fmt.Sprintf(".terraform/providers/registry.opentofu.org/hashicorp/gamma/2.0.0/%s", getproviders.CurrentPlatform)
 	if _, err := os.Stat(betweenPath); os.IsNotExist(err) {
 		t.Error("provider 'gamma' not downloaded")
 	}
@@ -1465,7 +1469,7 @@ func TestInit_getProviderLegacyFromState(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get-provider-legacy-from-state"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	overrides := metaOverridesForProvider(testProvider())
 	ui := new(cli.MockUi)
@@ -1506,7 +1510,7 @@ func TestInit_getProviderInvalidPackage(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get-provider-invalid-package"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	overrides := metaOverridesForProvider(testProvider())
 	ui := new(cli.MockUi)
@@ -1547,7 +1551,7 @@ func TestInit_getProviderInvalidPackage(t *testing.T) {
 	}
 
 	// invalid provider should be installed
-	packagePath := fmt.Sprintf(".terraform/providers/registry.terraform.io/invalid/package/1.0.0/%s/terraform-package", getproviders.CurrentPlatform)
+	packagePath := fmt.Sprintf(".terraform/providers/registry.opentofu.org/invalid/package/1.0.0/%s/terraform-package", getproviders.CurrentPlatform)
 	if _, err := os.Stat(packagePath); os.IsNotExist(err) {
 		t.Fatal("provider 'invalid/package' not downloaded")
 	}
@@ -1568,7 +1572,7 @@ func TestInit_getProviderDetectedLegacy(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get-provider-detected-legacy"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// We need to construct a multisource with a mock source and a registry
 	// source: the mock source will return ErrRegistryProviderNotKnown for an
@@ -1606,12 +1610,12 @@ func TestInit_getProviderDetectedLegacy(t *testing.T) {
 	}
 
 	// foo should be installed
-	fooPath := fmt.Sprintf(".terraform/providers/registry.terraform.io/hashicorp/foo/1.2.3/%s", getproviders.CurrentPlatform)
+	fooPath := fmt.Sprintf(".terraform/providers/registry.opentofu.org/hashicorp/foo/1.2.3/%s", getproviders.CurrentPlatform)
 	if _, err := os.Stat(fooPath); os.IsNotExist(err) {
 		t.Error("provider 'foo' not installed")
 	}
 	// baz should not be installed
-	bazPath := fmt.Sprintf(".terraform/providers/registry.terraform.io/terraform-providers/baz/2.3.4/%s", getproviders.CurrentPlatform)
+	bazPath := fmt.Sprintf(".terraform/providers/registry.opentofu.org/terraform-providers/baz/2.3.4/%s", getproviders.CurrentPlatform)
 	if _, err := os.Stat(bazPath); !os.IsNotExist(err) {
 		t.Error("provider 'baz' installed, but should not be")
 	}
@@ -1621,8 +1625,8 @@ func TestInit_getProviderDetectedLegacy(t *testing.T) {
 	errors := []string{
 		"Failed to query available provider packages",
 		"Could not retrieve the list of available versions",
-		"registry.terraform.io/hashicorp/baz",
-		"registry.terraform.io/hashicorp/frob",
+		"registry.opentofu.org/hashicorp/baz",
+		"registry.opentofu.org/hashicorp/frob",
 	}
 	for _, want := range errors {
 		if !strings.Contains(errOutput, want) {
@@ -1631,11 +1635,76 @@ func TestInit_getProviderDetectedLegacy(t *testing.T) {
 	}
 }
 
+func TestInit_getProviderDetectedDuplicate(t *testing.T) {
+	// Create a temporary working directory that is empty
+	td := t.TempDir()
+	testCopyDir(t, testFixturePath("init-get-provider-detected-duplicate"), td)
+	t.Chdir(td)
+
+	// We need to construct a multisource with a mock source and a registry
+	// source: the mock source will return ErrRegistryProviderNotKnown for an
+	// unknown provider, and the registry source will allow us to look up the
+	// appropriate namespace if possible.
+	providerSource, psClose := newMockProviderSource(t, map[string][]string{
+		"hashicorp/foo": {"1.2.3"},
+		"opentofu/foo":  {"1.2.3"},
+		"hashicorp/bar": {"1.2.3"},
+	})
+	defer psClose()
+	registrySource, rsClose := testRegistrySource(t)
+	defer rsClose()
+	multiSource := getproviders.MultiSource{
+		{Source: providerSource},
+		{Source: registrySource},
+	}
+
+	ui := new(cli.MockUi)
+	view, _ := testView(t)
+	m := Meta{
+		Ui:             ui,
+		View:           view,
+		ProviderSource: multiSource,
+	}
+
+	c := &InitCommand{
+		Meta: m,
+	}
+
+	args := []string{
+		"-backend=false", // should be possible to install plugins without backend init
+	}
+	if code := c.Run(args); code != 0 {
+		t.Fatalf("expected error, got output: \n%s\n%s", ui.OutputWriter.String(), ui.ErrorWriter.String())
+	}
+
+	// error output is the main focus of this test
+	errOutput := ui.ErrorWriter.String()
+	errors := []string{
+		"Warning: Potential provider misconfiguration",
+		"OpenTofu has detected multiple providers of type foo",
+		"If this is intentional you can ignore this warning",
+	}
+	unexpected := []string{
+		"OpenTofu has detected multiple providers of type bar",
+	}
+	for _, want := range errors {
+		if !strings.Contains(errOutput, want) {
+			t.Fatalf("expected error %q: %s", want, errOutput)
+		}
+	}
+	for _, unwanted := range unexpected {
+		if strings.Contains(errOutput, unwanted) {
+			t.Fatalf("unexpected error %q: %s", unwanted, errOutput)
+		}
+	}
+
+}
+
 func TestInit_providerSource(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-required-providers"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	providerSource, close := newMockProviderSource(t, map[string][]string{
 		"test":      {"1.2.3", "1.2.4"},
@@ -1706,7 +1775,8 @@ func TestInit_providerSource(t *testing.T) {
 			getproviders.MustParseVersion("1.2.4"),
 			getproviders.MustParseVersionConstraints("= 1.2.4"),
 			[]getproviders.Hash{
-				getproviders.HashScheme1.New("see6W06w09Ea+AobFJ+mbvPTie6ASqZAAdlFZbs8BSM="),
+				getproviders.HashScheme1.New("vEthLkqAecdQimaW6JHZ0SBRNtHibLnOb31tX9ZXlcI="),
+				getproviders.HashSchemeZip.New("ec7c3fd6eb575c06f0e6957e1ee8531a588805c4eeb8abb5e4156911e080eb31"),
 			},
 		),
 		addrs.NewDefaultProvider("test"): depsfile.NewProviderLock(
@@ -1714,7 +1784,8 @@ func TestInit_providerSource(t *testing.T) {
 			getproviders.MustParseVersion("1.2.3"),
 			getproviders.MustParseVersionConstraints("= 1.2.3"),
 			[]getproviders.Hash{
-				getproviders.HashScheme1.New("wlbEC2mChQZ2hhgUhl6SeVLPP7fMqOFUZAQhQ9GIIno="),
+				getproviders.HashScheme1.New("8CjxaUBuegKZSFnRos39Fs+CS78ax0Dyb7aIA5XBiNI="),
+				getproviders.HashSchemeZip.New("6f85a1f747dd09455cd77683c0e06da647d8240461b8b36b304b9056814d91f2"),
 			},
 		),
 		addrs.NewDefaultProvider("source"): depsfile.NewProviderLock(
@@ -1722,7 +1793,8 @@ func TestInit_providerSource(t *testing.T) {
 			getproviders.MustParseVersion("1.2.3"),
 			getproviders.MustParseVersionConstraints("= 1.2.3"),
 			[]getproviders.Hash{
-				getproviders.HashScheme1.New("myS3qb3px3tRBq1ZWRYJeUH+kySWpBc0Yy8rw6W7/p4="),
+				getproviders.HashScheme1.New("ACYytVQ2Q6JfoEs7xxCqa1yGFf9HwF3SEHzJKBoJfo0="),
+				getproviders.HashSchemeZip.New("69f700dbf9eda586abef22ab08e3a3896760e01885f6cbda4460ceeca4e3c0ba"),
 			},
 		),
 	}
@@ -1734,23 +1806,51 @@ func TestInit_providerSource(t *testing.T) {
 	if got, want := ui.OutputWriter.String(), "Installed hashicorp/test v1.2.3 (verified checksum)"; !strings.Contains(got, want) {
 		t.Fatalf("unexpected output: %s\nexpected to include %q", got, want)
 	}
+	// On stderr we should've written a warning about the dependency lock file
+	// entry being incomplete for these three providers, because we installed
+	// from a non-origin-registry source and so registry-promised hashes
+	// are not available.
 	if got, want := ui.ErrorWriter.String(), "\n  - hashicorp/source\n  - hashicorp/test\n  - hashicorp/test-beta"; !strings.Contains(got, want) {
 		t.Fatalf("wrong error message\nshould contain: %s\ngot:\n%s", want, got)
 	}
 }
 
 func TestInit_cancelModules(t *testing.T) {
-	// This test runs `tofu init` as if SIGINT (or similar on other
-	// platforms) were sent to it, testing that it is interruptible.
+	// This test runs `tofu init` against a server that stalls indefinitely
+	// instead of responding, and then requests shutdown in the same way
+	// as package main would in response to SIGINT (or similar on other
+	// platforms). This ensures that slow requests can be interrupted.
 
-	td := t.TempDir()
-	testCopyDir(t, testFixturePath("init-registry-module"), td)
-	defer testChdir(t, td)()
+	wd := tempWorkingDirFixture(t, "init-module-early-eval")
+	t.Chdir(wd.RootModuleDir())
 
-	// Our shutdown channel is pre-closed so init will exit as soon as it
-	// starts a cancelable portion of the process.
+	// One failure mode of this test is for the cancellation to fail and
+	// so the command runs indefinitely, and so we'll impose a timeout
+	// to allow us to eventually catch that and diagnose it as a test
+	// failure message.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	// This server intentionally stalls any incoming request by leaving
+	// the connection open but not responding. "reqs" will become
+	// readable each time a request arrives.
+	server, reqs := testHangServer(t)
+
+	// We'll close this channel once we've been notified that the server
+	// received our request, which should then cause cancellation.
 	shutdownCh := make(chan struct{})
-	close(shutdownCh)
+	go func() {
+		select {
+		case <-reqs:
+			// Request received, so time to interrupt.
+			t.Log("server received request, but won't respond")
+			close(shutdownCh)
+		case <-ctx.Done():
+			// Exit early if we reach our timeout.
+			t.Log("timeout before server received request")
+		}
+		server.CloseClientConnections() // force any active client request to fail
+	}()
 
 	ui := cli.NewMockUi()
 	view, _ := testView(t)
@@ -1759,18 +1859,29 @@ func TestInit_cancelModules(t *testing.T) {
 		Ui:               ui,
 		View:             view,
 		ShutdownCh:       shutdownCh,
-	}
 
+		// This test needs a real module package fetcher instance because
+		// its configuration includes a reference to a module from a registry
+		// that doesn't really exist. The shutdown signal prevents us from
+		// actually making a request to this, but we still need to provide
+		// the fetcher so that it will _attempt_ to make a network request
+		// that can then fail with a cancellation error.
+		ModulePackageFetcher: getmodules.NewPackageFetcher(t.Context(), nil),
+	}
 	c := &InitCommand{
 		Meta: m,
 	}
 
-	args := []string{}
-
-	if code := c.Run(args); code == 0 {
+	fakeModuleSourceAddr := server.URL + "/example.zip"
+	t.Logf("attempting to install module package from %s", fakeModuleSourceAddr)
+	args := []string{"-var=module_source=" + fakeModuleSourceAddr}
+	code := c.Run(args)
+	if err := ctx.Err(); err != nil {
+		t.Errorf("context error: %s", err) // probably reporting a timeout
+	}
+	if code == 0 {
 		t.Fatalf("succeeded; wanted error\n%s", ui.OutputWriter.String())
 	}
-
 	if got, want := ui.ErrorWriter.String(), `Module installation was canceled by an interrupt signal`; !strings.Contains(got, want) {
 		t.Fatalf("wrong error message\nshould contain: %s\ngot:\n%s", want, got)
 	}
@@ -1782,7 +1893,7 @@ func TestInit_cancelProviders(t *testing.T) {
 
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-required-providers"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// Use a provider source implementation which is designed to hang indefinitely,
 	// to avoid a race between the closed shutdown channel and the provider source
@@ -1826,7 +1937,7 @@ func TestInit_getUpgradePlugins(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get-providers"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	providerSource, close := newMockProviderSource(t, map[string][]string{
 		// looking for an exact version
@@ -1922,7 +2033,8 @@ func TestInit_getUpgradePlugins(t *testing.T) {
 			getproviders.MustParseVersion("2.3.4"),
 			getproviders.MustParseVersionConstraints("> 1.0.0, < 3.0.0"),
 			[]getproviders.Hash{
-				getproviders.HashScheme1.New("JVqAvZz88A+hS2wHVtTWQkHaxoA/LrUAz0H3jPBWPIA="),
+				getproviders.HashScheme1.New("ntfa04OlRqIfGL/Gkd+nGMJSHGWyAgMQplFWk7WEsOk="),
+				getproviders.HashSchemeZip.New("29e1045215056680ac59fe95554f0eb1323534a3d411aae2a7a04495ac884258"),
 			},
 		),
 		addrs.NewDefaultProvider("exact"): depsfile.NewProviderLock(
@@ -1930,7 +2042,8 @@ func TestInit_getUpgradePlugins(t *testing.T) {
 			getproviders.MustParseVersion("1.2.3"),
 			getproviders.MustParseVersionConstraints("= 1.2.3"),
 			[]getproviders.Hash{
-				getproviders.HashScheme1.New("H1TxWF8LyhBb6B4iUdKhLc/S9sC/jdcrCykpkbGcfbg="),
+				getproviders.HashScheme1.New("Xgk+LFrzi9Mop6+d01TCTaD3kgSrUASCAUU1aDsEsJU="),
+				getproviders.HashSchemeZip.New("9cb7a3006b9c1344b2d838a5bb03c1e0f04b8c046beb38901eaf3cc99fceb870"),
 			},
 		),
 		addrs.NewDefaultProvider("greater-than"): depsfile.NewProviderLock(
@@ -1938,7 +2051,8 @@ func TestInit_getUpgradePlugins(t *testing.T) {
 			getproviders.MustParseVersion("2.3.4"),
 			getproviders.MustParseVersionConstraints(">= 2.3.3"),
 			[]getproviders.Hash{
-				getproviders.HashScheme1.New("SJPpXx/yoFE/W+7eCipjJ+G21xbdnTBD7lWodZ8hWkU="),
+				getproviders.HashScheme1.New("8M5DXICmUiVjbkxNNO0zXNsV6duCVNWzq3/Kf0mNIo4="),
+				getproviders.HashSchemeZip.New("bfb683ee94027efb191986484352ada8219cd45e856d25c2ddcb489e100a9a02"),
 			},
 		),
 	}
@@ -1951,7 +2065,7 @@ func TestInit_getProviderMissing(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get-providers"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	providerSource, close := newMockProviderSource(t, map[string][]string{
 		// looking for exact version 1.2.3
@@ -1990,7 +2104,7 @@ func TestInit_checkRequiredVersion(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-check-required-version"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := cli.NewMockUi()
 	view, _ := testView(t)
@@ -2021,7 +2135,7 @@ func TestInit_checkRequiredVersionFirst(t *testing.T) {
 	t.Run("root_module", func(t *testing.T) {
 		td := t.TempDir()
 		testCopyDir(t, testFixturePath("init-check-required-version-first"), td)
-		defer testChdir(t, td)()
+		t.Chdir(td)
 
 		ui := cli.NewMockUi()
 		view, _ := testView(t)
@@ -2045,7 +2159,7 @@ func TestInit_checkRequiredVersionFirst(t *testing.T) {
 	t.Run("sub_module", func(t *testing.T) {
 		td := t.TempDir()
 		testCopyDir(t, testFixturePath("init-check-required-version-first-module"), td)
-		defer testChdir(t, td)()
+		t.Chdir(td)
 
 		ui := cli.NewMockUi()
 		view, _ := testView(t)
@@ -2074,7 +2188,7 @@ func TestInit_providerLockFile(t *testing.T) {
 	testCopyDir(t, testFixturePath("init-provider-lock-file"), td)
 	// The temporary directory does not have write permission (dr-xr-xr-x) after the copy
 	defer os.Chmod(td, os.ModePerm)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	providerSource, close := newMockProviderSource(t, map[string][]string{
 		"test": {"1.2.3"},
@@ -2105,17 +2219,18 @@ func TestInit_providerLockFile(t *testing.T) {
 		t.Fatalf("failed to read dependency lock file %s: %s", lockFile, err)
 	}
 	buf = bytes.TrimSpace(buf)
-	// The hash in here is for the fake package that newMockProviderSource produces
-	// (so it'll change if newMockProviderSource starts producing different contents)
+	// The hashes in here are for the fake package that newMockProviderSource produces
+	// (so they'll change if newMockProviderSource starts producing different contents)
 	wantLockFile := strings.TrimSpace(`
 # This file is maintained automatically by "tofu init".
 # Manual edits may be lost in future updates.
 
-provider "registry.terraform.io/hashicorp/test" {
+provider "registry.opentofu.org/hashicorp/test" {
   version     = "1.2.3"
   constraints = "1.2.3"
   hashes = [
-    "h1:wlbEC2mChQZ2hhgUhl6SeVLPP7fMqOFUZAQhQ9GIIno=",
+    "h1:8CjxaUBuegKZSFnRos39Fs+CS78ax0Dyb7aIA5XBiNI=",
+    "zh:6f85a1f747dd09455cd77683c0e06da647d8240461b8b36b304b9056814d91f2",
   ]
 }
 `)
@@ -2138,11 +2253,11 @@ func TestInit_providerLockFileReadonly(t *testing.T) {
 # This file is maintained automatically by "tofu init".
 # Manual edits may be lost in future updates.
 
-provider "registry.terraform.io/hashicorp/test" {
+provider "registry.opentofu.org/hashicorp/test" {
   version     = "1.2.3"
   constraints = "1.2.3"
   hashes = [
-    "zh:e919b507a91e23a00da5c2c4d0b64bcc7900b68d43b3951ac0f6e5d80387fbdc",
+    "zh:6f85a1f747dd09455cd77683c0e06da647d8240461b8b36b304b9056814d91f2",
   ]
 }
 `)
@@ -2151,7 +2266,7 @@ provider "registry.terraform.io/hashicorp/test" {
 # This file is maintained automatically by "tofu init".
 # Manual edits may be lost in future updates.
 
-provider "registry.terraform.io/hashicorp/test" {
+provider "registry.opentofu.org/hashicorp/test" {
   version     = "1.2.3"
   constraints = "1.2.3"
   hashes = [
@@ -2164,12 +2279,12 @@ provider "registry.terraform.io/hashicorp/test" {
 # This file is maintained automatically by "tofu init".
 # Manual edits may be lost in future updates.
 
-provider "registry.terraform.io/hashicorp/test" {
+provider "registry.opentofu.org/hashicorp/test" {
   version     = "1.2.3"
   constraints = "1.2.3"
   hashes = [
-    "h1:wlbEC2mChQZ2hhgUhl6SeVLPP7fMqOFUZAQhQ9GIIno=",
-    "zh:e919b507a91e23a00da5c2c4d0b64bcc7900b68d43b3951ac0f6e5d80387fbdc",
+    "h1:8CjxaUBuegKZSFnRos39Fs+CS78ax0Dyb7aIA5XBiNI=",
+    "zh:6f85a1f747dd09455cd77683c0e06da647d8240461b8b36b304b9056814d91f2",
   ]
 }
 `)
@@ -2243,7 +2358,7 @@ provider "registry.terraform.io/hashicorp/test" {
 			want:      badLockFile,
 		},
 		{
-			desc:    "reject to change required provider dependences",
+			desc:    "reject to change required provider dependencies",
 			fixture: "init-provider-lock-file-readonly-add",
 			providers: map[string][]string{
 				"test": {"1.2.3"},
@@ -2261,7 +2376,7 @@ provider "registry.terraform.io/hashicorp/test" {
 			// Create a temporary working directory that is empty
 			td := t.TempDir()
 			testCopyDir(t, testFixturePath(tc.fixture), td)
-			defer testChdir(t, td)()
+			t.Chdir(td)
 
 			providerSource, close := newMockProviderSource(t, tc.providers)
 			defer close()
@@ -2277,7 +2392,7 @@ provider "registry.terraform.io/hashicorp/test" {
 				Meta: m,
 			}
 
-			// write input lockfile
+			//write input lockfile
 			lockFile := ".terraform.lock.hcl"
 			if err := os.WriteFile(lockFile, []byte(tc.input), 0644); err != nil {
 				t.Fatalf("failed to write input lockfile: %s", err)
@@ -2304,9 +2419,9 @@ provider "registry.terraform.io/hashicorp/test" {
 }
 
 func TestInit_pluginDirReset(t *testing.T) {
-	td := testTempDir(t)
+	td := testTempDirRealpath(t)
 	defer os.RemoveAll(td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// An empty provider source
 	providerSource, close := newMockProviderSource(t, nil)
@@ -2376,7 +2491,7 @@ func TestInit_pluginDirReset(t *testing.T) {
 func TestInit_pluginDirProviders(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get-providers"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// An empty provider source
 	providerSource, close := newMockProviderSource(t, nil)
@@ -2438,7 +2553,7 @@ func TestInit_pluginDirProviders(t *testing.T) {
 			getproviders.MustParseVersion("2.3.4"),
 			getproviders.MustParseVersionConstraints("> 1.0.0, < 3.0.0"),
 			[]getproviders.Hash{
-				getproviders.HashScheme1.New("JVqAvZz88A+hS2wHVtTWQkHaxoA/LrUAz0H3jPBWPIA="),
+				getproviders.HashScheme1.New("ntfa04OlRqIfGL/Gkd+nGMJSHGWyAgMQplFWk7WEsOk="),
 			},
 		),
 		addrs.NewDefaultProvider("exact"): depsfile.NewProviderLock(
@@ -2446,7 +2561,7 @@ func TestInit_pluginDirProviders(t *testing.T) {
 			getproviders.MustParseVersion("1.2.3"),
 			getproviders.MustParseVersionConstraints("= 1.2.3"),
 			[]getproviders.Hash{
-				getproviders.HashScheme1.New("H1TxWF8LyhBb6B4iUdKhLc/S9sC/jdcrCykpkbGcfbg="),
+				getproviders.HashScheme1.New("Xgk+LFrzi9Mop6+d01TCTaD3kgSrUASCAUU1aDsEsJU="),
 			},
 		),
 		addrs.NewDefaultProvider("greater-than"): depsfile.NewProviderLock(
@@ -2454,7 +2569,7 @@ func TestInit_pluginDirProviders(t *testing.T) {
 			getproviders.MustParseVersion("2.3.4"),
 			getproviders.MustParseVersionConstraints(">= 2.3.3"),
 			[]getproviders.Hash{
-				getproviders.HashScheme1.New("SJPpXx/yoFE/W+7eCipjJ+G21xbdnTBD7lWodZ8hWkU="),
+				getproviders.HashScheme1.New("8M5DXICmUiVjbkxNNO0zXNsV6duCVNWzq3/Kf0mNIo4="),
 			},
 		),
 	}
@@ -2473,7 +2588,7 @@ func TestInit_pluginDirProviders(t *testing.T) {
 func TestInit_pluginDirProvidersDoesNotGet(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-get-providers"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// Our provider source has a suitable package for "between" available,
 	// but we should ignore it because -plugin-dir is set and thus this
@@ -2550,7 +2665,7 @@ func TestInit_pluginDirProvidersDoesNotGet(t *testing.T) {
 func TestInit_pluginDirWithBuiltIn(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-internal"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// An empty provider source
 	providerSource, close := newMockProviderSource(t, nil)
@@ -2588,7 +2703,7 @@ func TestInit_invalidBuiltInProviders(t *testing.T) {
 	//   not exist at all.
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-internal-invalid"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// An empty provider source
 	providerSource, close := newMockProviderSource(t, nil)
@@ -2623,7 +2738,7 @@ func TestInit_invalidBuiltInProviders(t *testing.T) {
 func TestInit_invalidSyntaxNoBackend(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-syntax-invalid-no-backend"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := cli.NewMockUi()
 	view, _ := testView(t)
@@ -2641,7 +2756,7 @@ func TestInit_invalidSyntaxNoBackend(t *testing.T) {
 	}
 
 	errStr := ui.ErrorWriter.String()
-	if subStr := "OpenTofu encountered problems during initialisation, including problems\nwith the configuration, described below."; !strings.Contains(errStr, subStr) {
+	if subStr := "OpenTofu encountered problems during initialization, including problems\nwith the configuration, described below."; !strings.Contains(errStr, subStr) {
 		t.Errorf("Error output should include preamble\nwant substr: %s\ngot:\n%s", subStr, errStr)
 	}
 	if subStr := "Error: Unsupported block type"; !strings.Contains(errStr, subStr) {
@@ -2652,7 +2767,7 @@ func TestInit_invalidSyntaxNoBackend(t *testing.T) {
 func TestInit_invalidSyntaxWithBackend(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-syntax-invalid-with-backend"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := cli.NewMockUi()
 	view, _ := testView(t)
@@ -2670,7 +2785,7 @@ func TestInit_invalidSyntaxWithBackend(t *testing.T) {
 	}
 
 	errStr := ui.ErrorWriter.String()
-	if subStr := "OpenTofu encountered problems during initialisation, including problems\nwith the configuration, described below."; !strings.Contains(errStr, subStr) {
+	if subStr := "OpenTofu encountered problems during initialization, including problems\nwith the configuration, described below."; !strings.Contains(errStr, subStr) {
 		t.Errorf("Error output should include preamble\nwant substr: %s\ngot:\n%s", subStr, errStr)
 	}
 	if subStr := "Error: Unsupported block type"; !strings.Contains(errStr, subStr) {
@@ -2681,7 +2796,7 @@ func TestInit_invalidSyntaxWithBackend(t *testing.T) {
 func TestInit_invalidSyntaxInvalidBackend(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-syntax-invalid-backend-invalid"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := cli.NewMockUi()
 	view, _ := testView(t)
@@ -2699,7 +2814,7 @@ func TestInit_invalidSyntaxInvalidBackend(t *testing.T) {
 	}
 
 	errStr := ui.ErrorWriter.String()
-	if subStr := "OpenTofu encountered problems during initialisation, including problems\nwith the configuration, described below."; !strings.Contains(errStr, subStr) {
+	if subStr := "OpenTofu encountered problems during initialization, including problems\nwith the configuration, described below."; !strings.Contains(errStr, subStr) {
 		t.Errorf("Error output should include preamble\nwant substr: %s\ngot:\n%s", subStr, errStr)
 	}
 	if subStr := "Error: Unsupported block type"; !strings.Contains(errStr, subStr) {
@@ -2713,7 +2828,7 @@ func TestInit_invalidSyntaxInvalidBackend(t *testing.T) {
 func TestInit_invalidSyntaxBackendAttribute(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-syntax-invalid-backend-attribute-invalid"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := cli.NewMockUi()
 	view, _ := testView(t)
@@ -2731,7 +2846,7 @@ func TestInit_invalidSyntaxBackendAttribute(t *testing.T) {
 	}
 
 	errStr := ui.ErrorWriter.String()
-	if subStr := "OpenTofu encountered problems during initialisation, including problems\nwith the configuration, described below."; !strings.Contains(errStr, subStr) {
+	if subStr := "OpenTofu encountered problems during initialization, including problems\nwith the configuration, described below."; !strings.Contains(errStr, subStr) {
 		t.Errorf("Error output should include preamble\nwant substr: %s\ngot:\n%s", subStr, errStr)
 	}
 	if subStr := "Error: Invalid character"; !strings.Contains(errStr, subStr) {
@@ -2746,7 +2861,7 @@ func TestInit_tests(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-with-tests"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	provider := applyFixtureProvider() // We just want the types from this provider.
 
@@ -2776,7 +2891,7 @@ func TestInit_testsWithProvider(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-with-tests-with-provider"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	provider := applyFixtureProvider() // We just want the types from this provider.
 
@@ -2803,11 +2918,10 @@ func TestInit_testsWithProvider(t *testing.T) {
 
 	got := ui.ErrorWriter.String()
 	want := `
-Error: Failed to query available provider packages
+Error: Failed to resolve provider packages
 
-Could not retrieve the list of available versions for provider
-hashicorp/test: no available releases match the given constraints 1.0.1,
-1.0.2
+Could not resolve provider hashicorp/test: no available releases match the
+given constraints 1.0.1, 1.0.2
 
 `
 	if diff := cmp.Diff(got, want); len(diff) > 0 {
@@ -2819,7 +2933,7 @@ func TestInit_testsWithModule(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("init-with-tests-with-module"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	provider := applyFixtureProvider() // We just want the types from this provider.
 
@@ -2851,6 +2965,219 @@ func TestInit_testsWithModule(t *testing.T) {
 	}
 }
 
+// Test variables are handled correctly when interacting with module sources
+func TestInit_moduleSource(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		td := t.TempDir()
+		testCopyDir(t, testFixturePath("init-module-variable-source"), td)
+		t.Chdir(td)
+
+		ui := cli.NewMockUi()
+		view, _ := testView(t)
+		closeInput := testInteractiveInput(t, []string{"./mod"})
+		defer closeInput()
+		c := &InitCommand{
+			Meta: Meta{
+				Ui:   ui,
+				View: view,
+			},
+		}
+
+		if code := c.Run(nil); code != 0 {
+			t.Fatalf("got exit status %d; want 0\nstderr:\n%s\n\nstdout:\n%s", code, ui.ErrorWriter.String(), ui.OutputWriter.String())
+		}
+	})
+
+	t.Run("missing-twice", func(t *testing.T) {
+		td := t.TempDir()
+		testCopyDir(t, testFixturePath("init-module-variable-source-multiple"), td)
+		t.Chdir(td)
+
+		ui := cli.NewMockUi()
+		view, _ := testView(t)
+		closeInput := testInteractiveInput(t, []string{"./mod"})
+		defer closeInput()
+		c := &InitCommand{
+			Meta: Meta{
+				Ui:   ui,
+				View: view,
+			},
+		}
+
+		if code := c.Run(nil); code != 0 {
+			t.Fatalf("got exit status %d; want 0\nstderr:\n%s\n\nstdout:\n%s", code, ui.ErrorWriter.String(), ui.OutputWriter.String())
+		}
+	})
+
+	t.Run("no-input", func(t *testing.T) {
+		td := t.TempDir()
+		testCopyDir(t, testFixturePath("init-module-variable-source"), td)
+		t.Chdir(td)
+
+		ui := cli.NewMockUi()
+		view, _ := testView(t)
+		closeInput := testInteractiveInput(t, []string{})
+		defer closeInput()
+		c := &InitCommand{
+			Meta: Meta{
+				Ui:   ui,
+				View: view,
+			},
+		}
+
+		args := []string{
+			"-input=false",
+		}
+
+		if code := c.Run(args); code != 1 {
+			t.Fatalf("got exit status %d; want 1\nstderr:\n%s\n\nstdout:\n%s", code, ui.ErrorWriter.String(), ui.OutputWriter.String())
+		}
+	})
+
+	t.Run("provided", func(t *testing.T) {
+		td := t.TempDir()
+		testCopyDir(t, testFixturePath("init-module-variable-source"), td)
+		t.Chdir(td)
+
+		ui := cli.NewMockUi()
+		view, _ := testView(t)
+		c := &InitCommand{
+			Meta: Meta{
+				Ui:   ui,
+				View: view,
+			},
+		}
+
+		args := []string{"-var", "src=./mod"}
+		if code := c.Run(args); code != 0 {
+			t.Fatalf("got exit status %d; want 1\nstderr:\n%s\n\nstdout:\n%s", code, ui.ErrorWriter.String(), ui.OutputWriter.String())
+		}
+	})
+}
+
+// Test variables are handled correctly when interacting with module versions
+func TestInit_moduleVersion(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("network access not allowed; use TF_ACC=1 to enable")
+	}
+
+	t.Run("provided", func(t *testing.T) {
+		td := t.TempDir()
+		testCopyDir(t, testFixturePath("init-module-variable-version"), td)
+		t.Chdir(td)
+
+		ui := cli.NewMockUi()
+		view, _ := testView(t)
+		c := &InitCommand{
+			Meta: Meta{
+				Ui:   ui,
+				View: view,
+			},
+		}
+
+		args := []string{"-var", "modver=0.0.1"}
+		if code := c.Run(args); code != 0 {
+			t.Fatalf("got exit status %d; want 1\nstderr:\n%s\n\nstdout:\n%s", code, ui.ErrorWriter.String(), ui.OutputWriter.String())
+		}
+	})
+}
+
+func TestInit_invalidExtraLabel(t *testing.T) {
+	td := t.TempDir()
+	testCopyDir(t, testFixturePath("init-syntax-invalid-extra-label"), td)
+	t.Chdir(td)
+
+	ui := cli.NewMockUi()
+	view, _ := testView(t)
+	m := Meta{
+		Ui:   ui,
+		View: view,
+	}
+
+	c := &InitCommand{
+		Meta: m,
+	}
+
+	if code := c.Run(nil); code == 0 {
+		t.Fatalf("succeeded, but was expecting error\nstdout:\n%s\nstderr:\n%s", ui.OutputWriter, ui.ErrorWriter)
+	}
+
+	errStr := ui.ErrorWriter.String()
+	splitted := strings.Split(errStr, "Error: Unsupported block type")
+	if len(splitted) != 2 {
+		t.Fatalf("want exactly one unsupported block type errors but got: %d\nstderr:\n%s\n\nstdout:\n%s", len(splitted)-1, errStr, ui.OutputWriter.String())
+	}
+}
+
+func TestInit_skipEncryptionBackendFalse(t *testing.T) {
+	t.Run("init success with encryption present and -backend=false", func(t *testing.T) {
+		// Create a temporary working directory that is empty
+		td := t.TempDir()
+		testCopyDir(t, testFixturePath("init-encryption-available"), td)
+		t.Chdir(td)
+
+		overrides := metaOverridesForProvider(testProvider())
+		ui := new(cli.MockUi)
+		view, _ := testView(t)
+		providerSource, closeCallback := newMockProviderSource(t, map[string][]string{
+			// mock aws provider
+			"hashicorp/aws": {"5.0", "5.8"},
+		})
+		defer closeCallback()
+		m := Meta{
+			testingOverrides: overrides,
+			Ui:               ui,
+			View:             view,
+			ProviderSource:   providerSource,
+		}
+
+		c := &InitCommand{
+			Meta: m,
+		}
+
+		args := []string{
+			"-backend=false", // should disable reading encryption key run init successfully
+		}
+		if code := c.Run(args); code != 0 {
+			t.Fatalf("init should run successfully with -backend=false: \ngot error : %s\n", ui.ErrorWriter.String())
+		}
+	})
+
+	t.Run("init fails with encryption present -backend=false not set", func(t *testing.T) {
+		// Create a temporary working directory that is empty
+		td := t.TempDir()
+		testCopyDir(t, testFixturePath("init-encryption-available"), td)
+		t.Chdir(td)
+
+		overrides := metaOverridesForProvider(testProvider())
+		ui := new(cli.MockUi)
+		view, _ := testView(t)
+		providerSource, closeCallback := newMockProviderSource(t, map[string][]string{
+			// mock aws provider
+			"hashicorp/aws": {"5.0", "5.8"},
+		})
+		defer closeCallback()
+		m := Meta{
+			testingOverrides: overrides,
+			Ui:               ui,
+			View:             view,
+			ProviderSource:   providerSource,
+		}
+
+		c := &InitCommand{
+			Meta: m,
+		}
+
+		var args []string
+		// Check error is generated from trying to read encryption key or fail test
+		if code := c.Run(args); code == 0 {
+			t.Fatalf("init should not run successfully\n")
+		} else if !strings.Contains(ui.ErrorWriter.String(), "key_provider.aws_kms.key failed with error:") {
+			t.Fatalf("generated error should contain the string \"Error: Unable to fetch encryption key data\"\ninstead got : %s\n", ui.ErrorWriter.String())
+		}
+	})
+}
+
 // newMockProviderSource is a helper to succinctly construct a mock provider
 // source that contains a set of packages matching the given provider versions
 // that are available for installation (from temporary local files).
@@ -2861,7 +3188,7 @@ func TestInit_testsWithModule(t *testing.T) {
 //
 // Provider addresses must be valid source strings, and passing only the
 // provider name will be interpreted as a "default" provider under
-// registry.terraform.io/hashicorp. If you need more control over the
+// registry.opentofu.org/hashicorp. If you need more control over the
 // provider addresses, pass a full provider source string.
 //
 // This function also registers providers as belonging to the current platform,
@@ -2956,7 +3283,7 @@ func installFakeProviderPackagesElsewhere(t *testing.T, cacheDir *providercache.
 			if err != nil {
 				t.Fatalf("failed to prepare fake package for %s %s: %s", name, versionStr, err)
 			}
-			_, err = cacheDir.InstallPackage(context.Background(), meta, nil)
+			_, err = cacheDir.InstallPackage(context.Background(), meta, nil, false)
 			if err != nil {
 				t.Fatalf("failed to install fake package for %s %s: %s", name, versionStr, err)
 			}
@@ -2980,13 +3307,13 @@ func expectedPackageInstallPath(name, version string, exe bool) string {
 	platform := getproviders.CurrentPlatform
 	baseDir := ".terraform/providers"
 	if exe {
-		p := fmt.Sprintf("registry.terraform.io/hashicorp/%s/%s/%s/terraform-provider-%s_%s", name, version, platform, name, version)
+		p := fmt.Sprintf("registry.opentofu.org/hashicorp/%s/%s/%s/terraform-provider-%s_%s", name, version, platform, name, version)
 		if platform.OS == "windows" {
 			p += ".exe"
 		}
 		return filepath.ToSlash(filepath.Join(baseDir, p))
 	}
 	return filepath.ToSlash(filepath.Join(
-		baseDir, fmt.Sprintf("registry.terraform.io/hashicorp/%s/%s/%s", name, version, platform),
+		baseDir, fmt.Sprintf("registry.opentofu.org/hashicorp/%s/%s/%s", name, version, platform),
 	))
 }

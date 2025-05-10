@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"log"
 
 	"github.com/opentofu/opentofu/internal/addrs"
@@ -32,7 +35,7 @@ type OutputTransformer struct {
 	Destroying bool
 }
 
-func (t *OutputTransformer) Transform(g *Graph) error {
+func (t *OutputTransformer) Transform(_ context.Context, g *Graph) error {
 	return t.transform(g, t.Config)
 }
 

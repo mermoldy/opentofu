@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package jsonconfig
@@ -65,6 +67,7 @@ type variable struct {
 	Default     json.RawMessage `json:"default,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Sensitive   bool            `json:"sensitive,omitempty"`
+	Deprecated  string          `json:"deprecated,omitempty"`
 }
 
 // Resource is the representation of a resource in the config
@@ -109,6 +112,7 @@ type resource struct {
 
 type output struct {
 	Sensitive   bool       `json:"sensitive,omitempty"`
+	Deprecated  string     `json:"deprecated,omitempty"`
 	Expression  expression `json:"expression,omitempty"`
 	DependsOn   []string   `json:"depends_on,omitempty"`
 	Description string     `json:"description,omitempty"`
@@ -324,6 +328,7 @@ func marshalModule(c *configs.Config, schemas *tofu.Schemas, addr string) (modul
 	for _, v := range c.Module.Outputs {
 		o := output{
 			Sensitive:  v.Sensitive,
+			Deprecated: v.Deprecated,
 			Expression: marshalExpression(v.Expr),
 		}
 		if v.Description != "" {
@@ -335,7 +340,7 @@ func marshalModule(c *configs.Config, schemas *tofu.Schemas, addr string) (modul
 				ref, diags := addrs.ParseRef(d)
 				// we should not get an error here, because `tofu validate`
 				// would have complained well before this point, but if we do we'll
-				// silenty skip it.
+				// silently skip it.
 				if !diags.HasErrors() {
 					dependencies[i] = ref.Subject.String()
 				}
@@ -365,6 +370,7 @@ func marshalModule(c *configs.Config, schemas *tofu.Schemas, addr string) (modul
 				Default:     defaultValJSON,
 				Description: v.Description,
 				Sensitive:   v.Sensitive,
+				Deprecated:  v.Deprecated,
 			}
 		}
 		module.Variables = vars
@@ -430,7 +436,7 @@ func marshalModuleCall(c *configs.Config, mc *configs.ModuleCall, schemas *tofu.
 			ref, diags := addrs.ParseRef(d)
 			// we should not get an error here, because `tofu validate`
 			// would have complained well before this point, but if we do we'll
-			// silenty skip it.
+			// silently skip it.
 			if !diags.HasErrors() {
 				dependencies[i] = ref.Subject.String()
 			}
@@ -503,7 +509,7 @@ func marshalResources(resources map[string]*configs.Resource, schemas *tofu.Sche
 				ref, diags := addrs.ParseRef(d)
 				// we should not get an error here, because `tofu validate`
 				// would have complained well before this point, but if we do we'll
-				// silenty skip it.
+				// silently skip it.
 				if !diags.HasErrors() {
 					dependencies[i] = ref.Subject.String()
 				}
@@ -521,7 +527,7 @@ func marshalResources(resources map[string]*configs.Resource, schemas *tofu.Sche
 
 // Flatten all resource provider keys in a module and its descendents, such
 // that any resources from providers using a configuration passed through the
-// module call have a direct refernce to that provider configuration.
+// module call have a direct reference to that provider configuration.
 func normalizeModuleProviderKeys(m *module, pcs map[string]providerConfig) {
 	for i, r := range m.Resources {
 		if pc, exists := pcs[r.ProviderConfigKey]; exists {

@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"log"
 
 	"github.com/opentofu/opentofu/internal/addrs"
@@ -23,7 +26,7 @@ type ResourceCountTransformer struct {
 	InstanceAddrs []addrs.AbsResourceInstance
 }
 
-func (t *ResourceCountTransformer) Transform(g *Graph) error {
+func (t *ResourceCountTransformer) Transform(_ context.Context, g *Graph) error {
 	for _, addr := range t.InstanceAddrs {
 		abstract := NewNodeAbstractResourceInstance(addr)
 		abstract.Schema = t.Schema

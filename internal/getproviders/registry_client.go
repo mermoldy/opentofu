@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package getproviders
@@ -22,10 +24,15 @@ import (
 	"github.com/hashicorp/go-retryablehttp"
 	svchost "github.com/hashicorp/terraform-svchost"
 	svcauth "github.com/hashicorp/terraform-svchost/auth"
+	otelAttr "go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/httpclient"
 	"github.com/opentofu/opentofu/internal/logging"
+	"github.com/opentofu/opentofu/internal/tracing"
+	"github.com/opentofu/opentofu/internal/tracing/traceattrs"
 	"github.com/opentofu/opentofu/version"
 )
 
@@ -36,7 +43,7 @@ const (
 	// can be configured to customize number of retries for module and provider
 	// discovery requests with the remote registry.
 	registryDiscoveryRetryEnvName = "TF_REGISTRY_DISCOVERY_RETRY"
-	defaultRetry                  = 1
+	registryClientDefaultRetry    = 1
 
 	// registryClientTimeoutEnvName is the name of the environment variable that
 	// can be configured to customize the timeout duration (seconds) for module
@@ -70,8 +77,8 @@ type registryClient struct {
 	httpClient *retryablehttp.Client
 }
 
-func newRegistryClient(baseURL *url.URL, creds svcauth.HostCredentials) *registryClient {
-	httpClient := httpclient.New()
+func newRegistryClient(ctx context.Context, baseURL *url.URL, creds svcauth.HostCredentials) *registryClient {
+	httpClient := httpclient.New(ctx)
 	httpClient.Timeout = requestTimeout
 
 	retryableClient := retryablehttp.NewClient()
@@ -97,6 +104,13 @@ func newRegistryClient(baseURL *url.URL, creds svcauth.HostCredentials) *registr
 // ErrUnauthorized if the registry responds with 401 or 403 status codes, or
 // ErrQueryFailed for any other protocol or operational problem.
 func (c *registryClient) ProviderVersions(ctx context.Context, addr addrs.Provider) (map[string][]string, []string, error) {
+	ctx, span := tracing.Tracer().Start(ctx,
+		"List Versions",
+		trace.WithAttributes(
+			otelAttr.String(traceattrs.ProviderAddress, addr.String()),
+		),
+	)
+	defer span.End()
 	endpointPath, err := url.Parse(path.Join(addr.Namespace, addr.Type, "versions"))
 	if err != nil {
 		// Should never happen because we're constructing this from
@@ -104,6 +118,7 @@ func (c *registryClient) ProviderVersions(ctx context.Context, addr addrs.Provid
 		return nil, nil, err
 	}
 	endpointURL := c.baseURL.ResolveReference(endpointPath)
+	span.SetAttributes(semconv.URLFull(endpointURL.String()))
 	req, err := retryablehttp.NewRequest("GET", endpointURL.String(), nil)
 	if err != nil {
 		return nil, nil, err
@@ -113,7 +128,9 @@ func (c *registryClient) ProviderVersions(ctx context.Context, addr addrs.Provid
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, nil, c.errQueryFailed(addr, err)
+		errResult := c.errQueryFailed(addr, err)
+		tracing.SetSpanError(span, errResult)
+		return nil, nil, errResult
 	}
 	defer resp.Body.Close()
 
@@ -121,13 +138,19 @@ func (c *registryClient) ProviderVersions(ctx context.Context, addr addrs.Provid
 	case http.StatusOK:
 		// Great!
 	case http.StatusNotFound:
-		return nil, nil, ErrRegistryProviderNotKnown{
+		err := ErrRegistryProviderNotKnown{
 			Provider: addr,
 		}
+		tracing.SetSpanError(span, err)
+		return nil, nil, err
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, nil, c.errUnauthorized(addr.Hostname)
+		err := c.errUnauthorized(addr.Hostname)
+		tracing.SetSpanError(span, err)
+		return nil, nil, err
 	default:
-		return nil, nil, c.errQueryFailed(addr, errors.New(resp.Status))
+		err := c.errQueryFailed(addr, errors.New(resp.Status))
+		tracing.SetSpanError(span, err)
+		return nil, nil, err
 	}
 
 	// We ignore the platforms portion of the response body, because the
@@ -144,7 +167,9 @@ func (c *registryClient) ProviderVersions(ctx context.Context, addr addrs.Provid
 
 	dec := json.NewDecoder(resp.Body)
 	if err := dec.Decode(&body); err != nil {
-		return nil, nil, c.errQueryFailed(addr, err)
+		errResult := c.errQueryFailed(addr, err)
+		tracing.SetSpanError(span, errResult)
+		return nil, nil, errResult
 	}
 
 	if len(body.Versions) == 0 {
@@ -167,7 +192,7 @@ func (c *registryClient) ProviderVersions(ctx context.Context, addr addrs.Provid
 //     under the assumption that the caller previously checked that the provider
 //     and version are valid.
 //   - ErrProtocolNotSupported if the requested provider version's protocols are not
-//     supported by this version of terraform.
+//     supported by this version of tofu.
 //   - ErrUnauthorized if the registry responds with 401 or 403 status codes
 //   - ErrQueryFailed for any other operational problem.
 func (c *registryClient) PackageMeta(ctx context.Context, provider addrs.Provider, version Version, target Platform) (PackageMeta, error) {
@@ -179,12 +204,23 @@ func (c *registryClient) PackageMeta(ctx context.Context, provider addrs.Provide
 		target.OS,
 		target.Arch,
 	))
+	ctx, span := tracing.Tracer().Start(ctx,
+		"Fetch metadata",
+		trace.WithAttributes(
+			otelAttr.String(traceattrs.ProviderAddress, provider.String()),
+			otelAttr.String(traceattrs.ProviderVersion, version.String()),
+		))
+	defer span.End()
+
 	if err != nil {
 		// Should never happen because we're constructing this from
 		// already-validated components.
 		return PackageMeta{}, err
 	}
 	endpointURL := c.baseURL.ResolveReference(endpointPath)
+	span.SetAttributes(
+		semconv.URLFull(endpointURL.String()),
+	)
 
 	req, err := retryablehttp.NewRequest("GET", endpointURL.String(), nil)
 	if err != nil {
@@ -195,6 +231,7 @@ func (c *registryClient) PackageMeta(ctx context.Context, provider addrs.Provide
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		tracing.SetSpanError(span, err)
 		return PackageMeta{}, c.errQueryFailed(provider, err)
 	}
 	defer resp.Body.Close()
@@ -250,7 +287,7 @@ func (c *registryClient) PackageMeta(ctx context.Context, provider addrs.Provide
 	}
 	protoVersions.Sort()
 
-	// Verify that this version of terraform supports the providers' protocol
+	// Verify that this version of tofu supports the providers' protocol
 	// version(s)
 	if len(protoVersions) > 0 {
 		supportedProtos := MeetingConstraints(SupportedPluginProtocols)
@@ -326,7 +363,7 @@ func (c *registryClient) PackageMeta(ctx context.Context, provider addrs.Provide
 	if shasumsURL.Scheme != "http" && shasumsURL.Scheme != "https" {
 		return PackageMeta{}, fmt.Errorf("registry response includes invalid SHASUMS URL: must use http or https scheme")
 	}
-	document, err := c.getFile(shasumsURL)
+	document, err := c.getFile(ctx, shasumsURL)
 	if err != nil {
 		return PackageMeta{}, c.errQueryFailed(
 			provider,
@@ -341,7 +378,7 @@ func (c *registryClient) PackageMeta(ctx context.Context, provider addrs.Provide
 	if signatureURL.Scheme != "http" && signatureURL.Scheme != "https" {
 		return PackageMeta{}, fmt.Errorf("registry response includes invalid SHASUMS signature URL: must use http or https scheme")
 	}
-	signature, err := c.getFile(signatureURL)
+	signature, err := c.getFile(ctx, signatureURL)
 	if err != nil {
 		return PackageMeta{}, c.errQueryFailed(
 			provider,
@@ -357,7 +394,7 @@ func (c *registryClient) PackageMeta(ctx context.Context, provider addrs.Provide
 	ret.Authentication = PackageAuthenticationAll(
 		NewMatchingChecksumAuthentication(document, body.Filename, checksum),
 		NewArchiveChecksumAuthentication(ret.TargetPlatform, checksum),
-		NewSignatureAuthentication(document, signature, keys, &provider),
+		NewSignatureAuthentication(ret, document, signature, keys, provider),
 	)
 
 	return ret, nil
@@ -432,8 +469,14 @@ func (c *registryClient) errUnauthorized(hostname svchost.Hostname) error {
 	}
 }
 
-func (c *registryClient) getFile(url *url.URL) ([]byte, error) {
-	resp, err := c.httpClient.Get(url.String())
+func (c *registryClient) getFile(ctx context.Context, url *url.URL) ([]byte, error) {
+	req, err := retryablehttp.NewRequest("GET", url.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -454,7 +497,7 @@ func (c *registryClient) getFile(url *url.URL) ([]byte, error) {
 // configureDiscoveryRetry configures the number of retries the registry client
 // will attempt for requests with retryable errors, like 502 status codes
 func configureDiscoveryRetry() {
-	discoveryRetry = defaultRetry
+	discoveryRetry = registryClientDefaultRetry
 
 	if v := os.Getenv(registryDiscoveryRetryEnvName); v != "" {
 		retry, err := strconv.Atoi(v)

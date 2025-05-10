@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package local
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -12,6 +15,7 @@ import (
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/backend"
 	"github.com/opentofu/opentofu/internal/configs/configschema"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/providers"
 	"github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/states/statemgr"
@@ -30,7 +34,7 @@ func TestLocal(t *testing.T) *Local {
 		t.Fatal(err)
 	}
 
-	local := New()
+	local := New(encryption.StateEncryptionDisabled())
 	local.StatePath = filepath.Join(tempDir, "state.tfstate")
 	local.StateOutPath = filepath.Join(tempDir, "state.tfstate")
 	local.StateBackupPath = filepath.Join(tempDir, "state.tfstate.bak")
@@ -113,24 +117,24 @@ type TestLocalSingleState struct {
 
 // TestNewLocalSingle is a factory for creating a TestLocalSingleState.
 // This function matches the signature required for backend/init.
-func TestNewLocalSingle() backend.Backend {
-	return &TestLocalSingleState{Local: New()}
+func TestNewLocalSingle(enc encryption.StateEncryption) backend.Backend {
+	return &TestLocalSingleState{Local: New(encryption.StateEncryptionDisabled())}
 }
 
-func (b *TestLocalSingleState) Workspaces() ([]string, error) {
+func (b *TestLocalSingleState) Workspaces(context.Context) ([]string, error) {
 	return nil, backend.ErrWorkspacesNotSupported
 }
 
-func (b *TestLocalSingleState) DeleteWorkspace(string, bool) error {
+func (b *TestLocalSingleState) DeleteWorkspace(context.Context, string, bool) error {
 	return backend.ErrWorkspacesNotSupported
 }
 
-func (b *TestLocalSingleState) StateMgr(name string) (statemgr.Full, error) {
+func (b *TestLocalSingleState) StateMgr(ctx context.Context, name string) (statemgr.Full, error) {
 	if name != backend.DefaultStateName {
 		return nil, backend.ErrWorkspacesNotSupported
 	}
 
-	return b.Local.StateMgr(name)
+	return b.Local.StateMgr(ctx, name)
 }
 
 // TestLocalNoDefaultState is a backend implementation that wraps
@@ -143,12 +147,12 @@ type TestLocalNoDefaultState struct {
 
 // TestNewLocalNoDefault is a factory for creating a TestLocalNoDefaultState.
 // This function matches the signature required for backend/init.
-func TestNewLocalNoDefault() backend.Backend {
-	return &TestLocalNoDefaultState{Local: New()}
+func TestNewLocalNoDefault(enc encryption.StateEncryption) backend.Backend {
+	return &TestLocalNoDefaultState{Local: New(encryption.StateEncryptionDisabled())}
 }
 
-func (b *TestLocalNoDefaultState) Workspaces() ([]string, error) {
-	workspaces, err := b.Local.Workspaces()
+func (b *TestLocalNoDefaultState) Workspaces(ctx context.Context) ([]string, error) {
+	workspaces, err := b.Local.Workspaces(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -163,23 +167,26 @@ func (b *TestLocalNoDefaultState) Workspaces() ([]string, error) {
 	return filtered, nil
 }
 
-func (b *TestLocalNoDefaultState) DeleteWorkspace(name string, force bool) error {
+func (b *TestLocalNoDefaultState) DeleteWorkspace(ctx context.Context, name string, force bool) error {
 	if name == backend.DefaultStateName {
 		return backend.ErrDefaultWorkspaceNotSupported
 	}
-	return b.Local.DeleteWorkspace(name, force)
+	return b.Local.DeleteWorkspace(ctx, name, force)
 }
 
-func (b *TestLocalNoDefaultState) StateMgr(name string) (statemgr.Full, error) {
+func (b *TestLocalNoDefaultState) StateMgr(ctx context.Context, name string) (statemgr.Full, error) {
 	if name == backend.DefaultStateName {
 		return nil, backend.ErrDefaultWorkspaceNotSupported
 	}
-	return b.Local.StateMgr(name)
+	return b.Local.StateMgr(ctx, name)
 }
 
 func testStateFile(t *testing.T, path string, s *states.State) {
-	stateFile := statemgr.NewFilesystem(path)
-	stateFile.WriteState(s)
+	t.Helper()
+
+	if err := statemgr.WriteAndPersist(statemgr.NewFilesystem(path, encryption.StateEncryptionDisabled()), s, nil); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func mustProviderConfig(s string) addrs.AbsProviderConfig {
@@ -198,28 +205,32 @@ func mustResourceInstanceAddr(s string) addrs.AbsResourceInstance {
 	return addr
 }
 
-// assertBackendStateUnlocked attempts to lock the backend state. Failure
-// indicates that the state was indeed locked and therefore this function will
-// return true.
+// assertBackendStateUnlocked attempts to lock the backend state for a test.
+// Failure indicates that the state was locked and false is returned.
+// True is returned if a lock was obtained.
 func assertBackendStateUnlocked(t *testing.T, b *Local) bool {
 	t.Helper()
-	stateMgr, _ := b.StateMgr(backend.DefaultStateName)
+	stateMgr, _ := b.StateMgr(t.Context(), backend.DefaultStateName)
 	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
 		t.Errorf("state is already locked: %s", err.Error())
+		// lock was obtained
 		return false
 	}
+	// lock was not obtained
 	return true
 }
 
-// assertBackendStateLocked attempts to lock the backend state. Failure
-// indicates that the state was already locked and therefore this function will
-// return false.
+// assertBackendStateLocked attempts to lock the backend state for a test.
+// Failure indicates that the state was not locked and false is returned.
+// True is returned if a lock was not obtained.
 func assertBackendStateLocked(t *testing.T, b *Local) bool {
 	t.Helper()
-	stateMgr, _ := b.StateMgr(backend.DefaultStateName)
+	stateMgr, _ := b.StateMgr(t.Context(), backend.DefaultStateName)
 	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
+		// lock was not obtained
 		return true
 	}
 	t.Error("unexpected success locking state")
-	return true
+	// lock was obtained
+	return false
 }

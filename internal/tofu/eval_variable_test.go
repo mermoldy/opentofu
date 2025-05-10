@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
@@ -6,9 +8,11 @@ package tofu
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/opentofu/opentofu/internal/addrs"
@@ -1121,14 +1125,14 @@ func TestEvalVariableValidations_jsonErrorMessageEdgeCase(t *testing.T) {
 		// message with the expression successfully evaluated.
 		{
 			varName: "valid",
-			given:   cty.StringVal("bar"),
+			given:   marks.Deprecated(cty.StringVal("bar"), marks.DeprecationCause{}), // deprecation mark must not cause panic
 			wantErr: []string{
 				"Invalid value for variable",
 				"Valid template string bar",
 			},
 			status: checks.StatusFail,
 		},
-		// Invalid variable validation declaration due to an unparseable
+		// Invalid variable validation declaration due to an unparsable
 		// template string. Assigning a value which passes the condition
 		// results in a warning about the error message.
 		{
@@ -1172,7 +1176,15 @@ func TestEvalVariableValidations_jsonErrorMessageEdgeCase(t *testing.T) {
 
 			// We need a minimal scope to allow basic functions to be passed to
 			// the HCL scope
-			ctx.EvaluationScopeScope = &lang.Scope{}
+			ctx.EvaluationScopeScope = &lang.Scope{
+				Data: &evaluationStateData{Evaluator: &Evaluator{
+					Config:             cfg,
+					VariableValuesLock: &sync.Mutex{},
+					VariableValues: map[string]map[string]cty.Value{"": {
+						test.varName: cty.UnknownVal(cty.String),
+					}},
+				}},
+			}
 			ctx.GetVariableValueFunc = func(addr addrs.AbsInputVariableInstance) cty.Value {
 				if got, want := addr.String(), varAddr.String(); got != want {
 					t.Errorf("incorrect argument to GetVariableValue: got %s, want %s", got, want)
@@ -1325,16 +1337,24 @@ variable "bar" {
 
 			// We need a minimal scope to allow basic functions to be passed to
 			// the HCL scope
-			ctx.EvaluationScopeScope = &lang.Scope{}
+			ctx.EvaluationScopeScope = &lang.Scope{
+				Data: &evaluationStateData{Evaluator: &Evaluator{
+					Config:             cfg,
+					VariableValuesLock: &sync.Mutex{},
+					VariableValues: map[string]map[string]cty.Value{"": {
+						test.varName: cty.UnknownVal(cty.String),
+					}},
+				}},
+			}
 			ctx.GetVariableValueFunc = func(addr addrs.AbsInputVariableInstance) cty.Value {
 				if got, want := addr.String(), varAddr.String(); got != want {
 					t.Errorf("incorrect argument to GetVariableValue: got %s, want %s", got, want)
 				}
-				if varCfg.Sensitive {
-					return test.given.Mark(marks.Sensitive)
-				} else {
-					return test.given
-				}
+				// NOTE: This intentionally doesn't mark the result as sensitive,
+				// because BuiltinEvalContext.GetVariableValue doesn't either.
+				// It's the responsibility of downstream code to detect and handle
+				// configured sensitivity.
+				return test.given
 			}
 			ctx.ChecksState = checks.NewState(cfg)
 			ctx.ChecksState.ReportCheckableObjects(varAddr.ConfigCheckable(), addrs.MakeSet[addrs.Checkable](varAddr))
@@ -1364,6 +1384,190 @@ variable "bar" {
 						}
 					}
 					t.Errorf("no error diagnostics found containing %q\ngot: %s", want, gotDiags.Err().Error())
+				}
+			}
+		})
+	}
+}
+
+func TestEvalVariableValidations_sensitiveValueDiagnostics(t *testing.T) {
+	// This test verifies that values for sensitive variables get captured
+	// into diagnostic messages with the sensitive mark intact, so that
+	// the values won't be disclosed in the UI.
+	// Earlier versions handled this incorrectly:
+	//    https://github.com/opentofu/opentofu/issues/2219
+
+	cfgSrc := `
+		variable "foo" {
+			type      = string
+			sensitive = true
+
+			validation {
+				condition     = length(var.foo) == 8 # intentionally fails
+				error_message = "Foo must have 8 characters."
+			}
+		}
+	`
+	cfg := testModuleInline(t, map[string]string{
+		"main.tf": cfgSrc,
+	})
+	varAddr := addrs.InputVariable{Name: "foo"}.Absolute(addrs.RootModuleInstance)
+
+	ctx := &MockEvalContext{}
+	ctx.EvaluationScopeScope = &lang.Scope{
+		Data: &evaluationStateData{Evaluator: &Evaluator{
+			Config:             cfg,
+			VariableValuesLock: &sync.Mutex{},
+			VariableValues: map[string]map[string]cty.Value{"": {
+				varAddr.Variable.Name: cty.UnknownVal(cty.String),
+			}},
+		}},
+	}
+	ctx.GetVariableValueFunc = func(addr addrs.AbsInputVariableInstance) cty.Value {
+		if got, want := addr.String(), varAddr.String(); got != want {
+			t.Errorf("incorrect argument to GetVariableValue: got %s, want %s", got, want)
+		}
+		// NOTE: This intentionally doesn't mark the result as sensitive,
+		// because BuiltinEvalContext.GetVariableValueFunc doesn't either.
+		// It's the responsibility of downstream code to detect and handle
+		// configured sensitivity.
+		return cty.StringVal("boop")
+	}
+	ctx.ChecksState = checks.NewState(cfg)
+	ctx.ChecksState.ReportCheckableObjects(varAddr.ConfigCheckable(), addrs.MakeSet[addrs.Checkable](varAddr))
+
+	gotDiags := evalVariableValidations(
+		varAddr, cfg.Module.Variables["foo"], nil, ctx,
+	)
+	if !gotDiags.HasErrors() {
+		t.Fatalf("unexpected success; want validation error")
+	}
+
+	// The generated diagnostic(s) should all capture the evaluation context
+	// that was used to evaluate the condition, where the variable's value
+	// should be marked as sensitive so it won't get displayed in clear
+	// in the UI output.
+	// (The HasErrors check above guarantees that there's at least one
+	// diagnostic here for us to iterate over.)
+	for _, diag := range gotDiags {
+		if diag.Severity() != tfdiags.Error {
+			continue
+		}
+		fromExpr := diag.FromExpr()
+		if fromExpr == nil {
+			t.Fatalf("diagnostic does not have source expression information at all")
+		}
+		allVarVals := fromExpr.EvalContext.Variables["var"]
+		if allVarVals == cty.NilVal || !allVarVals.Type().IsObjectType() {
+			t.Fatalf("diagnostic did not capture an object value for the top-level symbol 'var'")
+		}
+		gotVal := allVarVals.GetAttr("foo")
+		if gotVal == cty.NilVal {
+			t.Fatalf("diagnostic did not capture a value for var.foo")
+		}
+		if !gotVal.HasMark(marks.Sensitive) {
+			t.Errorf("var.foo value is not marked as sensitive in diagnostic")
+		}
+	}
+}
+
+// Testing the way variable deprecation diagnostics are generated
+func TestEvalVariableValidations_deprecationDiagnostics(t *testing.T) {
+	cfg := testModule(t, "validate-deprecated-var")
+
+	ctx := &MockEvalContext{}
+	ctx.EvaluationScopeScope = &lang.Scope{
+		Data: &evaluationStateData{Evaluator: &Evaluator{
+			Config:             cfg,
+			VariableValuesLock: &sync.Mutex{},
+		}},
+	}
+
+	tests := map[string]struct {
+		varAddr    addrs.AbsInputVariableInstance
+		varCfg     *configs.Variable
+		expr       hcl.Expression
+		fromRemote bool
+
+		expectedDiags tfdiags.Diagnostics
+	}{
+		"local-mod-called-from-root": {
+			varAddr: addrs.InputVariable{Name: "foo"}.Absolute(addrs.RootModuleInstance.Child("foo-call", nil)),
+			varCfg:  cfg.Children["foo-call"].Module.Variables["foo"],
+			expr:    cfg.Module.ModuleCalls["foo-call"].Source,
+			expectedDiags: tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  `Variable marked as deprecated by the module author`,
+				Detail: fmt.Sprintf(
+					"Variable \"foo\" is marked as deprecated with the following message:\n%s",
+					cfg.Children["foo-call"].Module.Variables["foo"].Deprecated,
+				),
+				Subject: cfg.Module.ModuleCalls["foo-call"].Source.Range().Ptr(),
+			}),
+			fromRemote: false,
+		},
+		"local-mod-called-from-root-with-no-var": {
+			varAddr:       addrs.InputVariable{Name: "foo"}.Absolute(addrs.RootModuleInstance.Child("foo-call-no-var", nil)),
+			varCfg:        cfg.Children["foo-call-no-var"].Module.Variables["foo"],
+			expr:          nil,
+			expectedDiags: tfdiags.Diagnostics{},
+			fromRemote:    false,
+		},
+		"local-mod-called-from-root-with-null-var": {
+			varAddr:       addrs.InputVariable{Name: "foo"}.Absolute(addrs.RootModuleInstance.Child("foo-call-null", nil)),
+			varCfg:        cfg.Children["foo-call-null"].Module.Variables["foo"],
+			expr:          nil,
+			expectedDiags: tfdiags.Diagnostics{},
+			fromRemote:    false,
+		},
+		"local-mod-called-from-direct-child": {
+			varAddr: addrs.InputVariable{Name: "bar"}.Absolute(addrs.RootModuleInstance.Child("foo-call", nil).Child("bar-call", nil)),
+			varCfg:  cfg.Children["foo-call"].Children["bar-call"].Module.Variables["bar"],
+			expr:    cfg.Children["foo-call"].Module.ModuleCalls["bar-call"].Source,
+			expectedDiags: tfdiags.Diagnostics{}.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagWarning,
+				Summary:  `Variable marked as deprecated by the module author`,
+				Detail: fmt.Sprintf(
+					"Variable \"bar\" is marked as deprecated with the following message:\n%s",
+					cfg.Children["foo-call"].Children["bar-call"].Module.Variables["bar"].Deprecated,
+				),
+				Subject: cfg.Children["foo-call"].Module.ModuleCalls["bar-call"].Source.Range().Ptr(),
+			}),
+			fromRemote: false,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			varAddr := tt.varAddr
+
+			ctx.GetVariableValueFunc = func(addr addrs.AbsInputVariableInstance) cty.Value {
+				if got, want := addr.String(), varAddr.String(); got != want {
+					t.Errorf("incorrect argument to GetVariableValue: got %s, want %s", got, want)
+				}
+				// NOTE: the value itself doesn't matter. The value itself is not part of the processing so it can be whatever value we want
+				return cty.StringVal("bar baz")
+			}
+
+			expr := tt.expr
+			gotDiags := evalVariableDeprecation(varAddr, tt.varCfg, expr, ctx, tt.fromRemote)
+
+			if gotLen, expectedLen := len(gotDiags), len(tt.expectedDiags); gotLen != expectedLen {
+				t.Fatalf("expected %d diagnostics; got %d", expectedLen, gotLen)
+			}
+			for i := 0; i < len(gotDiags); i++ {
+				gotDiag := gotDiags[i]
+				expectedDiag := tt.expectedDiags[i]
+				if gotDiag.Severity() != expectedDiag.Severity() {
+					t.Fatalf(`return diagnostic is having the wrong severity. expected "%c"; got: "%c"`, expectedDiag.Severity(), gotDiag.Severity())
+				}
+				if gotDiag.Description().Summary != expectedDiag.Description().Summary {
+					t.Fatalf("invalid diag summary.\n\texpected:\n\t\t%s\n\tactual:\n\t\t%s", expectedDiag.Description().Summary, gotDiag.Description().Summary)
+				}
+				if gotDiag.Description().Detail != expectedDiag.Description().Detail {
+					t.Fatalf("invalid diag detail.\n\texpected:\n\t\t%s\n\tactual:\n\t\t%s", expectedDiag.Description().Detail, gotDiag.Description().Detail)
+				}
+				if !gotDiag.Source().Equal(expectedDiag.Source()) {
+					t.Fatalf("invalid diag source.\n\texpected:\n\t\t%+v\n\tactual:\n\t\t%+v", expectedDiag.Source(), gotDiag.Source())
 				}
 			}
 		})

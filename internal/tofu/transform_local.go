@@ -1,9 +1,13 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
 )
@@ -14,7 +18,7 @@ type LocalTransformer struct {
 	Config *configs.Config
 }
 
-func (t *LocalTransformer) Transform(g *Graph) error {
+func (t *LocalTransformer) Transform(_ context.Context, g *Graph) error {
 	return t.transformModule(g, t.Config)
 }
 

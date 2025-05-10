@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package local
@@ -21,6 +23,7 @@ import (
 	"github.com/opentofu/opentofu/internal/command/views"
 	"github.com/opentofu/opentofu/internal/configs/configschema"
 	"github.com/opentofu/opentofu/internal/depsfile"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/initwd"
 	"github.com/opentofu/opentofu/internal/plans"
 	"github.com/opentofu/opentofu/internal/providers"
@@ -39,8 +42,7 @@ func TestLocal_applyBasic(t *testing.T) {
 		"ami": cty.StringVal("bar"),
 	})}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 
 	run, err := b.Operation(context.Background(), op)
 	if err != nil {
@@ -66,7 +68,7 @@ func TestLocal_applyBasic(t *testing.T) {
 	checkState(t, b.StateOutPath, `
 test_instance.foo:
   ID = yes
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
   ami = bar
 `)
 
@@ -83,8 +85,7 @@ func TestLocal_applyCheck(t *testing.T) {
 		"ami": cty.StringVal("bar"),
 	})}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-check")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-check")
 
 	run, err := b.Operation(context.Background(), op)
 	if err != nil {
@@ -125,8 +126,7 @@ func TestLocal_applyEmptyDir(t *testing.T) {
 	p := TestLocalProvider(t, b, "test", providers.ProviderSchema{})
 	p.ApplyResourceChangeResponse = &providers.ApplyResourceChangeResponse{NewState: cty.ObjectVal(map[string]cty.Value{"id": cty.StringVal("yes")})}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/empty")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/empty")
 
 	run, err := b.Operation(context.Background(), op)
 	if err != nil {
@@ -159,8 +159,7 @@ func TestLocal_applyEmptyDirDestroy(t *testing.T) {
 	p := TestLocalProvider(t, b, "test", providers.ProviderSchema{})
 	p.ApplyResourceChangeResponse = &providers.ApplyResourceChangeResponse{}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/empty")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/empty")
 	op.PlanMode = plans.DestroyMode
 
 	run, err := b.Operation(context.Background(), op)
@@ -226,8 +225,7 @@ func TestLocal_applyError(t *testing.T) {
 		}
 	}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-error")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-error")
 
 	run, err := b.Operation(context.Background(), op)
 	if err != nil {
@@ -241,7 +239,7 @@ func TestLocal_applyError(t *testing.T) {
 	checkState(t, b.StateOutPath, `
 test_instance.foo:
   ID = foo
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
   ami = bar
 	`)
 
@@ -270,14 +268,9 @@ func TestLocal_applyBackendFail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get current working directory")
 	}
-	err = os.Chdir(filepath.Dir(b.StatePath))
-	if err != nil {
-		t.Fatalf("failed to set temporary working directory")
-	}
-	defer os.Chdir(wd)
+	t.Chdir(filepath.Dir(b.StatePath))
 
-	op, configCleanup, done := testOperationApply(t, wd+"/testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, wd+"/testdata/apply")
 
 	b.Backend = &backendWithFailingState{}
 
@@ -308,7 +301,7 @@ func TestLocal_applyBackendFail(t *testing.T) {
 	checkState(t, "errored.tfstate", `
 test_instance.foo: (tainted)
   ID = yes
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
   ami = bar
 	`)
 
@@ -322,8 +315,7 @@ func TestLocal_applyRefreshFalse(t *testing.T) {
 	p := TestLocalProvider(t, b, "test", planFixtureSchema())
 	testStateFile(t, b.StatePath, testPlanState())
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/plan")
 
 	run, err := b.Operation(context.Background(), op)
 	if err != nil {
@@ -347,9 +339,9 @@ type backendWithFailingState struct {
 	Local
 }
 
-func (b *backendWithFailingState) StateMgr(name string) (statemgr.Full, error) {
+func (b *backendWithFailingState) StateMgr(_ context.Context, name string) (statemgr.Full, error) {
 	return &failingState{
-		statemgr.NewFilesystem("failing-state.tfstate"),
+		statemgr.NewFilesystem("failing-state.tfstate", encryption.StateEncryptionDisabled()),
 	}, nil
 }
 
@@ -361,10 +353,10 @@ func (s failingState) WriteState(state *states.State) error {
 	return errors.New("fake failure")
 }
 
-func testOperationApply(t *testing.T, configDir string) (*backend.Operation, func(), func(*testing.T) *terminal.TestOutput) {
+func testOperationApply(t *testing.T, configDir string) (*backend.Operation, func(*testing.T) *terminal.TestOutput) {
 	t.Helper()
 
-	_, configLoader, configCleanup := initwd.MustLoadConfigForTests(t, configDir, "tests")
+	_, configLoader := initwd.MustLoadConfigForTests(t, configDir, "tests")
 
 	streams, done := terminal.StreamsForTesting(t)
 	view := views.NewOperation(arguments.ViewHuman, false, views.NewView(streams))
@@ -372,16 +364,17 @@ func testOperationApply(t *testing.T, configDir string) (*backend.Operation, fun
 	// Many of our tests use an overridden "test" provider that's just in-memory
 	// inside the test process, not a separate plugin on disk.
 	depLocks := depsfile.NewLocks()
-	depLocks.SetProviderOverridden(addrs.MustParseProviderSourceString("registry.terraform.io/hashicorp/test"))
+	depLocks.SetProviderOverridden(addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/test"))
 
 	return &backend.Operation{
 		Type:            backend.OperationTypeApply,
+		Encryption:      encryption.Disabled(),
 		ConfigDir:       configDir,
 		ConfigLoader:    configLoader,
 		StateLocker:     clistate.NewNoopLocker(),
 		View:            view,
 		DependencyLocks: depLocks,
-	}, configCleanup, done
+	}, done
 }
 
 // applyFixtureSchema returns a schema suitable for processing the
@@ -407,9 +400,8 @@ func TestApply_applyCanceledAutoApprove(t *testing.T) {
 
 	TestLocalProvider(t, b, "test", applyFixtureSchema())
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
+	op, done := testOperationApply(t, "./testdata/apply")
 	op.AutoApprove = true
-	defer configCleanup()
 	defer func() {
 		output := done(t)
 		if !strings.Contains(output.Stderr(), "execution halted") {

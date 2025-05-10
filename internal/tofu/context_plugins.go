@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -23,11 +26,10 @@ type contextPlugins struct {
 }
 
 func newContextPlugins(providerFactories map[addrs.Provider]providers.Factory, provisionerFactories map[string]provisioners.Factory) *contextPlugins {
-	ret := &contextPlugins{
+	return &contextPlugins{
 		providerFactories:    providerFactories,
 		provisionerFactories: provisionerFactories,
 	}
-	return ret
 }
 
 func (cp *contextPlugins) HasProvider(addr addrs.Provider) bool {
@@ -65,18 +67,24 @@ func (cp *contextPlugins) NewProvisionerInstance(typ string) (provisioners.Inter
 // ProviderSchema memoizes results by unique provider address, so it's fine
 // to repeatedly call this method with the same address if various different
 // parts of OpenTofu all need the same schema information.
-func (cp *contextPlugins) ProviderSchema(addr addrs.Provider) (providers.ProviderSchema, error) {
-	log.Printf("[TRACE] tofu.contextPlugins: Initializing provider %q to read its schema", addr)
-
+func (cp *contextPlugins) ProviderSchema(ctx context.Context, addr addrs.Provider) (providers.ProviderSchema, error) {
 	// Check the global schema cache first.
 	// This cache is only written by the provider client, and transparently
 	// used by GetProviderSchema, but we check it here because at this point we
 	// may be able to avoid spinning up the provider instance at all.
+	//
+	// It's worth noting that ServerCapabilities.GetProviderSchemaOptional is ignored here.
+	// That is because we're checking *prior* to the provider's instantiation.
+	// GetProviderSchemaOptional only says that *if we instantiate a provider*,
+	// then we need to run the get schema call at least once.
+	// BUG This SHORT CIRCUITS the logic below and is not the only code which inserts provider schemas into the cache!!
 	schemas, ok := providers.SchemaCache.Get(addr)
 	if ok {
+		log.Printf("[TRACE] tofu.contextPlugins: Serving provider %q schema from global schema cache", addr)
 		return schemas, nil
 	}
 
+	log.Printf("[TRACE] tofu.contextPlugins: Initializing provider %q to read its schema", addr)
 	provider, err := cp.NewProviderInstance(addr)
 	if err != nil {
 		return schemas, fmt.Errorf("failed to instantiate provider %q to obtain schema: %w", addr, err)
@@ -121,8 +129,8 @@ func (cp *contextPlugins) ProviderSchema(addr addrs.Provider) (providers.Provide
 // reads the full schema of the given provider and then extracts just the
 // provider's configuration schema, which defines what's expected in a
 // "provider" block in the configuration when configuring this provider.
-func (cp *contextPlugins) ProviderConfigSchema(providerAddr addrs.Provider) (*configschema.Block, error) {
-	providerSchema, err := cp.ProviderSchema(providerAddr)
+func (cp *contextPlugins) ProviderConfigSchema(ctx context.Context, providerAddr addrs.Provider) (*configschema.Block, error) {
+	providerSchema, err := cp.ProviderSchema(ctx, providerAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -141,8 +149,8 @@ func (cp *contextPlugins) ProviderConfigSchema(providerAddr addrs.Provider) (*co
 // Managed resource types have versioned schemas, so the second return value
 // is the current schema version number for the requested resource. The version
 // is irrelevant for other resource modes.
-func (cp *contextPlugins) ResourceTypeSchema(providerAddr addrs.Provider, resourceMode addrs.ResourceMode, resourceType string) (*configschema.Block, uint64, error) {
-	providerSchema, err := cp.ProviderSchema(providerAddr)
+func (cp *contextPlugins) ResourceTypeSchema(ctx context.Context, providerAddr addrs.Provider, resourceMode addrs.ResourceMode, resourceType string) (*configschema.Block, uint64, error) {
+	providerSchema, err := cp.ProviderSchema(ctx, providerAddr)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package oss
@@ -16,10 +18,12 @@ import (
 	"github.com/aliyun/aliyun-tablestore-go-sdk/tablestore"
 	"github.com/opentofu/opentofu/internal/backend"
 	"github.com/opentofu/opentofu/internal/configs/hcl2shim"
+	"github.com/opentofu/opentofu/internal/encryption"
 )
 
 // verify that we are doing ACC tests or the OSS tests specifically
 func testACC(t *testing.T) {
+	t.Helper()
 	skip := os.Getenv("TF_ACC") == "" && os.Getenv("TF_OSS_TEST") == ""
 	if skip {
 		t.Log("oss backend tests require setting TF_ACC or TF_OSS_TEST")
@@ -28,9 +32,7 @@ func testACC(t *testing.T) {
 	if skip {
 		t.Fatal("oss backend tests require setting ALICLOUD_ACCESS_KEY or ALICLOUD_ACCESS_KEY_ID")
 	}
-	if os.Getenv("ALICLOUD_REGION") == "" {
-		os.Setenv("ALICLOUD_REGION", "cn-beijing")
-	}
+	t.Setenv("ALICLOUD_REGION", "cn-beijing")
 }
 
 func TestBackend_impl(t *testing.T) {
@@ -48,7 +50,7 @@ func TestBackendConfig(t *testing.T) {
 		"tablestore_table":    "TableStore",
 	}
 
-	b := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(config)).(*Backend)
+	b := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(config)).(*Backend)
 
 	if !strings.HasPrefix(b.ossClient.Config.Endpoint, "https://oss-cn-beijing") {
 		t.Fatalf("Incorrect region was provided")
@@ -83,10 +85,10 @@ func TestBackendConfigWorkSpace(t *testing.T) {
 		"tablestore_table":    "TableStore",
 	}
 
-	b := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(config)).(*Backend)
+	b := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(config)).(*Backend)
 	createOSSBucket(t, b.ossClient, bucketName)
 	defer deleteOSSBucket(t, b.ossClient, bucketName)
-	if _, err := b.Workspaces(); err != nil {
+	if _, err := b.Workspaces(t.Context()); err != nil {
 		t.Fatal(err.Error())
 	}
 	if !strings.HasPrefix(b.ossClient.Config.Endpoint, "https://oss-cn-beijing") {
@@ -122,7 +124,7 @@ func TestBackendConfigProfile(t *testing.T) {
 		"profile":             "default",
 	}
 
-	b := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(config)).(*Backend)
+	b := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(config)).(*Backend)
 
 	if !strings.HasPrefix(b.ossClient.Config.Endpoint, "https://oss-cn-beijing") {
 		t.Fatalf("Incorrect region was provided")
@@ -156,7 +158,7 @@ func TestBackendConfig_invalidKey(t *testing.T) {
 		"tablestore_table":    "TableStore",
 	})
 
-	_, results := New().PrepareConfig(cfg)
+	_, results := New(encryption.StateEncryptionDisabled()).PrepareConfig(cfg)
 	if !results.HasErrors() {
 		t.Fatal("expected config validation error")
 	}
@@ -168,12 +170,12 @@ func TestBackend(t *testing.T) {
 	bucketName := fmt.Sprintf("terraform-remote-oss-test-%x", time.Now().Unix())
 	statePrefix := "multi/level/path/"
 
-	b1 := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(map[string]interface{}{
+	b1 := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(map[string]interface{}{
 		"bucket": bucketName,
 		"prefix": statePrefix,
 	})).(*Backend)
 
-	b2 := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(map[string]interface{}{
+	b2 := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(map[string]interface{}{
 		"bucket": bucketName,
 		"prefix": statePrefix,
 	})).(*Backend)
@@ -249,5 +251,105 @@ func deleteTablestoreTable(t *testing.T, otsClient *tablestore.TableStoreClient,
 	_, err := otsClient.DeleteTable(params)
 	if err != nil {
 		t.Logf("WARNING: Failed to delete the test TableStore table %q. It has been left in your Alibaba Cloud account and may incur charges. (error was %s)", tableName, err)
+	}
+}
+
+func TestGetHttpProxyUrl(t *testing.T) {
+	tests := []struct {
+		name             string
+		rawUrl           string
+		httpProxy        string
+		httpsProxy       string
+		noProxy          string
+		expectedProxyURL string
+	}{
+		{
+			name:             "should set proxy using http_proxy environment variable",
+			rawUrl:           "http://example.com",
+			httpProxy:        "http://foo.bar:3128",
+			httpsProxy:       "https://secure.example.com",
+			noProxy:          "",
+			expectedProxyURL: "http://foo.bar:3128",
+		},
+		{
+			name:             "should set proxy using http_proxy environment variable",
+			rawUrl:           "http://example.com",
+			httpProxy:        "http://foo.barr",
+			httpsProxy:       "https://secure.example.com",
+			noProxy:          "",
+			expectedProxyURL: "http://foo.barr",
+		},
+		{
+			name:             "should set proxy using https_proxy environment variable",
+			rawUrl:           "https://secure.example.com",
+			httpProxy:        "http://foo.bar",
+			httpsProxy:       "https://foo.bar.com:3128",
+			noProxy:          "",
+			expectedProxyURL: "https://foo.bar.com:3128",
+		},
+		{
+			name:             "should set proxy using https_proxy environment variable",
+			rawUrl:           "https://secure.example.com",
+			httpProxy:        "",
+			httpsProxy:       "http://foo.baz",
+			noProxy:          "",
+			expectedProxyURL: "http://foo.baz",
+		},
+		{
+			name:             "should not set http proxy if NO_PROXY contains the host",
+			rawUrl:           "http://example.internal",
+			httpProxy:        "http://foo.bar:3128",
+			httpsProxy:       "",
+			noProxy:          "example.internal",
+			expectedProxyURL: "",
+		},
+		{
+			name:             "should not set HTTP proxy when NO_PROXY matches the domain with suffix",
+			rawUrl:           "http://qqu.example.internal",
+			httpProxy:        "http://foo.bar:3128",
+			httpsProxy:       "",
+			noProxy:          ".example.internal",
+			expectedProxyURL: "",
+		},
+		{
+			name:             "should not set https proxy if NO_PROXY contains the host",
+			rawUrl:           "https://secure.internal",
+			httpProxy:        "",
+			httpsProxy:       "https://foo.baz:3128",
+			noProxy:          "secure.internal",
+			expectedProxyURL: "",
+		},
+		{
+			name:             "should not set https proxy if NO_PROXY matches the domain with suffix",
+			rawUrl:           "https://ss.qcsc.secure.internal",
+			httpProxy:        "",
+			httpsProxy:       "https://foo.baz:3128",
+			noProxy:          ".secure.internal",
+			expectedProxyURL: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set environment variables
+			t.Setenv("HTTP_PROXY", tt.httpProxy)
+			t.Setenv("HTTPS_PROXY", tt.httpsProxy)
+			t.Setenv("NO_PROXY", tt.noProxy)
+
+			proxyUrl, err := getHttpProxyUrl(tt.rawUrl)
+			if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+
+			if tt.expectedProxyURL == "" {
+				if proxyUrl != nil {
+					t.Fatalf("unexpected proxy  URL, want nil, got: %s", proxyUrl)
+				}
+			} else {
+				if tt.expectedProxyURL != proxyUrl.String() {
+					t.Fatalf("unexpected proxy URL, want: %s, got: %s", tt.expectedProxyURL, proxyUrl.String())
+				}
+			}
+		})
 	}
 }

@@ -1,4 +1,13 @@
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package tfdiags
+
+import (
+	"github.com/hashicorp/hcl/v2"
+)
 
 // overriddenDiagnostic implements the Diagnostic interface by wrapping another
 // Diagnostic while overriding the severity of the original Diagnostic.
@@ -9,6 +18,7 @@ type overriddenDiagnostic struct {
 }
 
 var _ Diagnostic = overriddenDiagnostic{}
+var _ contextualFromConfigBody = overriddenDiagnostic{}
 
 // OverrideAll accepts a set of Diagnostics and wraps them with a new severity
 // and, optionally, a new ExtraInfo.
@@ -69,4 +79,25 @@ func (o overriddenDiagnostic) FromExpr() *FromExpr {
 
 func (o overriddenDiagnostic) ExtraInfo() interface{} {
 	return o.extra
+}
+
+// ElaborateFromConfigBody implements contextualFromConfigBody.
+//
+// If the original diagnostic also implements contextualFromConfigBody then this
+// delegates to its own ElaborateFromConfigBody implementation and then re-wraps
+// the result with the same overrides.
+//
+// Otherwise, the reciever is returned unchanged.
+func (o overriddenDiagnostic) ElaborateFromConfigBody(body hcl.Body, addr string) Diagnostic {
+	innerContextual, ok := o.original.(contextualFromConfigBody)
+	if !ok {
+		return o // inner diagnostic is not contextual, so nothing to do
+	}
+
+	newOriginal := innerContextual.ElaborateFromConfigBody(body, addr)
+	return overriddenDiagnostic{
+		original: newOriginal,
+		severity: o.severity,
+		extra:    o.extra,
+	}
 }

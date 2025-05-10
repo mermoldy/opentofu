@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package schema
@@ -187,7 +189,7 @@ func TestBackendConfigure(t *testing.T) {
 
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("%d-%s", i, tc.Name), func(t *testing.T) {
-			diags := tc.B.Configure(cty.ObjectVal(tc.Config))
+			diags := tc.B.Configure(t.Context(), cty.ObjectVal(tc.Config))
 			if diags.HasErrors() != tc.Err {
 				t.Errorf("wrong number of diagnostics")
 			}

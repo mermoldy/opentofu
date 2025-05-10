@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package e2etest
@@ -14,22 +16,18 @@ import (
 	"github.com/opentofu/opentofu/internal/plans"
 )
 
-// The tests in this file run through different scenarios recommended in our
-// "Running Terraform in Automation" guide:
-//     https://www.placeholderplaceholderplaceholder.io/guides/running-terraform-in-automation.html
-
 // TestPlanApplyInAutomation runs through the "main case" of init, plan, apply
 // using the specific command line options suggested in the guide.
 func TestPlanApplyInAutomation(t *testing.T) {
 	t.Parallel()
 
-	// This test reaches out to releases.hashicorp.com to download the
+	// This test reaches out to registry.opentofu.org to download the
 	// template and null providers, so it can only run if network access is
 	// allowed.
 	skipIfCannotAccessNetwork(t)
 
 	fixturePath := filepath.Join("testdata", "full-workflow-null")
-	tf := e2e.NewBinary(t, terraformBin, fixturePath)
+	tf := e2e.NewBinary(t, tofuBin, fixturePath)
 
 	// We advertise that _any_ non-empty value works, so we'll test something
 	// unconventional here.
@@ -130,13 +128,13 @@ func TestPlanApplyInAutomation(t *testing.T) {
 func TestAutoApplyInAutomation(t *testing.T) {
 	t.Parallel()
 
-	// This test reaches out to releases.hashicorp.com to download the
+	// This test reaches out to registry.opentofu.org to download the
 	// template and null providers, so it can only run if network access is
 	// allowed.
 	skipIfCannotAccessNetwork(t)
 
 	fixturePath := filepath.Join("testdata", "full-workflow-null")
-	tf := e2e.NewBinary(t, terraformBin, fixturePath)
+	tf := e2e.NewBinary(t, tofuBin, fixturePath)
 
 	// We advertise that _any_ non-empty value works, so we'll test something
 	// unconventional here.
@@ -196,13 +194,13 @@ func TestAutoApplyInAutomation(t *testing.T) {
 func TestPlanOnlyInAutomation(t *testing.T) {
 	t.Parallel()
 
-	// This test reaches out to releases.hashicorp.com to download the
+	// This test reaches out to registry.opentofu.org to download the
 	// template and null providers, so it can only run if network access is
 	// allowed.
 	skipIfCannotAccessNetwork(t)
 
 	fixturePath := filepath.Join("testdata", "full-workflow-null")
-	tf := e2e.NewBinary(t, terraformBin, fixturePath)
+	tf := e2e.NewBinary(t, tofuBin, fixturePath)
 
 	// We advertise that _any_ non-empty value works, so we'll test something
 	// unconventional here.
@@ -236,12 +234,46 @@ func TestPlanOnlyInAutomation(t *testing.T) {
 	}
 
 	// Because we're running with TF_IN_AUTOMATION set, we should not see
-	// any mention of the the "tofu apply" command in the output.
+	// any mention of the "tofu apply" command in the output.
 	if strings.Contains(stdout, "tofu apply") {
 		t.Errorf("unwanted mention of \"tofu apply\" in plan output\n%s", stdout)
 	}
 
 	if tf.FileExists("tfplan") {
 		t.Error("plan file was created, but was not expected")
+	}
+}
+
+func TestPlanOnDeprecated(t *testing.T) {
+	t.Parallel()
+
+	fixturePath := filepath.Join("testdata", "deprecated-values")
+	tf := e2e.NewBinary(t, tofuBin, fixturePath)
+
+	//// INIT
+	_, stderr, err := tf.Run("init", "-input=false")
+	if err != nil {
+		t.Fatalf("unexpected init error: %s\nstderr:\n%s", err, stderr)
+	}
+
+	//// PLAN
+	stdout, stderr, err := tf.Run("plan")
+	if err != nil {
+		t.Fatalf("unexpected plan error: %s\nstderr:\n%s", err, stderr)
+	}
+
+	expected := []string{
+		`Variable marked as deprecated by the module author`,
+		`Variable "input" is marked as deprecated with the following message`,
+		`This var is deprecated`,
+		`Value derived from a deprecated source`,
+		`This value is derived from module.call.output, which is deprecated with the`,
+		`following message:`,
+		`this output is deprecated`,
+	}
+	for _, want := range expected {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("invalid plan output. expected to contain %q but it does not:\n%s", want, stdout)
+		}
 	}
 }

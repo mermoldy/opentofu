@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package backend
@@ -14,8 +16,7 @@ import (
 )
 
 func TestReadPathOrContents_Path(t *testing.T) {
-	f, cleanup := testTempFile(t)
-	defer cleanup()
+	f := testTempFile(t)
 
 	if _, err := io.WriteString(f, "foobar"); err != nil {
 		t.Fatalf("err: %s", err)
@@ -37,8 +38,7 @@ func TestReadPathOrContents_TildePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
-	f, cleanup := testTempFile(t, home)
-	defer cleanup()
+	f := testTempFile(t, home)
 
 	if _, err := io.WriteString(f, "foobar"); err != nil {
 		t.Fatalf("err: %s", err)
@@ -66,8 +66,7 @@ func TestRead_PathNoPermission(t *testing.T) {
 		t.Skip("This test is invalid when running as root, since root can read every file")
 	}
 
-	f, cleanup := testTempFile(t)
-	defer cleanup()
+	f := testTempFile(t)
 
 	if _, err := io.WriteString(f, "foobar"); err != nil {
 		t.Fatalf("err: %s", err)
@@ -114,8 +113,13 @@ func TestReadPathOrContents_TildeContents(t *testing.T) {
 	}
 }
 
-// Returns an open tempfile based at baseDir and a function to clean it up.
-func testTempFile(t *testing.T, baseDir ...string) (*os.File, func()) {
+// Returns an open tempfile based at baseDir.
+//
+// The temporary file is cleaned up automatically when the calling
+// test is complete.
+func testTempFile(t testing.TB, baseDir ...string) *os.File {
+	t.Helper()
+
 	base := ""
 	if len(baseDir) == 1 {
 		base = baseDir[0]
@@ -125,7 +129,8 @@ func testTempFile(t *testing.T, baseDir ...string) (*os.File, func()) {
 		t.Fatalf("err: %s", err)
 	}
 
-	return f, func() {
+	t.Cleanup(func() {
 		os.Remove(f.Name())
-	}
+	})
+	return f
 }

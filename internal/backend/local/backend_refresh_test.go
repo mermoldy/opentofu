@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package local
@@ -36,8 +38,7 @@ func TestLocal_refresh(t *testing.T) {
 		"id": cty.StringVal("yes"),
 	})}
 
-	op, configCleanup, done := testOperationRefresh(t, "./testdata/refresh")
-	defer configCleanup()
+	op, done := testOperationRefresh(t, "./testdata/refresh")
 	defer done(t)
 
 	run, err := b.Operation(context.Background(), op)
@@ -53,7 +54,7 @@ func TestLocal_refresh(t *testing.T) {
 	checkState(t, b.StateOutPath, `
 test_instance.foo:
   ID = yes
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
 	`)
 
 	// the backend should be unlocked after a run
@@ -104,8 +105,7 @@ func TestLocal_refreshInput(t *testing.T) {
 	b.OpInput = true
 	b.ContextOpts.UIInput = &tofu.MockUIInput{InputReturnString: "bar"}
 
-	op, configCleanup, done := testOperationRefresh(t, "./testdata/refresh-var-unset")
-	defer configCleanup()
+	op, done := testOperationRefresh(t, "./testdata/refresh-var-unset")
 	defer done(t)
 	op.UIIn = b.ContextOpts.UIInput
 
@@ -122,7 +122,7 @@ func TestLocal_refreshInput(t *testing.T) {
 	checkState(t, b.StateOutPath, `
 test_instance.foo:
   ID = yes
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
 	`)
 }
 
@@ -138,8 +138,7 @@ func TestLocal_refreshValidate(t *testing.T) {
 	// Enable validation
 	b.OpValidation = true
 
-	op, configCleanup, done := testOperationRefresh(t, "./testdata/refresh")
-	defer configCleanup()
+	op, done := testOperationRefresh(t, "./testdata/refresh")
 	defer done(t)
 
 	run, err := b.Operation(context.Background(), op)
@@ -151,7 +150,7 @@ func TestLocal_refreshValidate(t *testing.T) {
 	checkState(t, b.StateOutPath, `
 test_instance.foo:
   ID = yes
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
 	`)
 }
 
@@ -188,8 +187,7 @@ func TestLocal_refreshValidateProviderConfigured(t *testing.T) {
 	// Enable validation
 	b.OpValidation = true
 
-	op, configCleanup, done := testOperationRefresh(t, "./testdata/refresh-provider-config")
-	defer configCleanup()
+	op, done := testOperationRefresh(t, "./testdata/refresh-provider-config")
 	defer done(t)
 
 	run, err := b.Operation(context.Background(), op)
@@ -205,7 +203,7 @@ func TestLocal_refreshValidateProviderConfigured(t *testing.T) {
 	checkState(t, b.StateOutPath, `
 test_instance.foo:
   ID = yes
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
 	`)
 }
 
@@ -214,8 +212,7 @@ test_instance.foo:
 func TestLocal_refresh_context_error(t *testing.T) {
 	b := TestLocal(t)
 	testStateFile(t, b.StatePath, testRefreshState())
-	op, configCleanup, done := testOperationRefresh(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationRefresh(t, "./testdata/apply")
 	defer done(t)
 
 	// we coerce a failure in Context() by omitting the provider schema
@@ -242,8 +239,7 @@ func TestLocal_refreshEmptyState(t *testing.T) {
 		"id": cty.StringVal("yes"),
 	})}
 
-	op, configCleanup, done := testOperationRefresh(t, "./testdata/refresh")
-	defer configCleanup()
+	op, done := testOperationRefresh(t, "./testdata/refresh")
 
 	run, err := b.Operation(context.Background(), op)
 	if err != nil {
@@ -264,10 +260,10 @@ func TestLocal_refreshEmptyState(t *testing.T) {
 	assertBackendStateUnlocked(t, b)
 }
 
-func testOperationRefresh(t *testing.T, configDir string) (*backend.Operation, func(), func(*testing.T) *terminal.TestOutput) {
+func testOperationRefresh(t *testing.T, configDir string) (*backend.Operation, func(*testing.T) *terminal.TestOutput) {
 	t.Helper()
 
-	_, configLoader, configCleanup := initwd.MustLoadConfigForTests(t, configDir, "tests")
+	_, configLoader := initwd.MustLoadConfigForTests(t, configDir, "tests")
 
 	streams, done := terminal.StreamsForTesting(t)
 	view := views.NewOperation(arguments.ViewHuman, false, views.NewView(streams))
@@ -275,7 +271,7 @@ func testOperationRefresh(t *testing.T, configDir string) (*backend.Operation, f
 	// Many of our tests use an overridden "test" provider that's just in-memory
 	// inside the test process, not a separate plugin on disk.
 	depLocks := depsfile.NewLocks()
-	depLocks.SetProviderOverridden(addrs.MustParseProviderSourceString("registry.terraform.io/hashicorp/test"))
+	depLocks.SetProviderOverridden(addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/test"))
 
 	return &backend.Operation{
 		Type:            backend.OperationTypeRefresh,
@@ -284,7 +280,7 @@ func testOperationRefresh(t *testing.T, configDir string) (*backend.Operation, f
 		StateLocker:     clistate.NewNoopLocker(),
 		View:            view,
 		DependencyLocks: depLocks,
-	}, configCleanup, done
+	}, done
 }
 
 // testRefreshState is just a common state that we use for testing refresh.
@@ -297,7 +293,8 @@ func testRefreshState() *states.State {
 			Status:    states.ObjectReady,
 			AttrsJSON: []byte(`{"id":"bar"}`),
 		},
-		mustProviderConfig(`provider["registry.terraform.io/hashicorp/test"]`),
+		mustProviderConfig(`provider["registry.opentofu.org/hashicorp/test"]`),
+		addrs.NoKey,
 	)
 	return state
 }

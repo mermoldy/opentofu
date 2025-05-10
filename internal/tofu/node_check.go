@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"log"
 
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -38,15 +41,15 @@ func (n *nodeReportCheck) ModulePath() addrs.Module {
 	return n.addr.Module
 }
 
-func (n *nodeReportCheck) Execute(ctx EvalContext, _ walkOperation) tfdiags.Diagnostics {
-	exp := ctx.InstanceExpander()
+func (n *nodeReportCheck) Execute(_ context.Context, evalCtx EvalContext, _ walkOperation) tfdiags.Diagnostics {
+	exp := evalCtx.InstanceExpander()
 	modInsts := exp.ExpandModule(n.ModulePath())
 
 	instAddrs := addrs.MakeSet[addrs.Checkable]()
 	for _, modAddr := range modInsts {
 		instAddrs.Add(n.addr.Check.Absolute(modAddr))
 	}
-	ctx.Checks().ReportCheckableObjects(n.addr, instAddrs)
+	evalCtx.Checks().ReportCheckableObjects(n.addr, instAddrs)
 	return nil
 }
 
@@ -148,12 +151,12 @@ func (n *nodeCheckAssert) Path() addrs.ModuleInstance {
 	return n.addr.Module
 }
 
-func (n *nodeCheckAssert) Execute(ctx EvalContext, _ walkOperation) tfdiags.Diagnostics {
+func (n *nodeCheckAssert) Execute(_ context.Context, evalCtx EvalContext, _ walkOperation) tfdiags.Diagnostics {
 
 	// We only want to actually execute the checks during specific
 	// operations, such as plan and applies.
 	if n.executeChecks {
-		if status := ctx.Checks().ObjectCheckStatus(n.addr); status == checks.StatusFail || status == checks.StatusError {
+		if status := evalCtx.Checks().ObjectCheckStatus(n.addr); status == checks.StatusFail || status == checks.StatusError {
 			// This check is already failing, so we won't try and evaluate it.
 			// This typically means there was an error in a data block within
 			// the check block.
@@ -163,7 +166,7 @@ func (n *nodeCheckAssert) Execute(ctx EvalContext, _ walkOperation) tfdiags.Diag
 		return evalCheckRules(
 			addrs.CheckAssertion,
 			n.config.Asserts,
-			ctx,
+			evalCtx,
 			n.addr,
 			EvalDataForNoInstanceKey,
 			tfdiags.Warning)
@@ -174,7 +177,7 @@ func (n *nodeCheckAssert) Execute(ctx EvalContext, _ walkOperation) tfdiags.Diag
 	// diagnostics if references do not exist etc.
 	var diags tfdiags.Diagnostics
 	for ix, assert := range n.config.Asserts {
-		_, _, moreDiags := validateCheckRule(addrs.NewCheckRule(n.addr, addrs.CheckAssertion, ix), assert, ctx, EvalDataForNoInstanceKey)
+		_, _, moreDiags := validateCheckRule(addrs.NewCheckRule(n.addr, addrs.CheckAssertion, ix), assert, evalCtx, EvalDataForNoInstanceKey)
 		diags = diags.Append(moreDiags)
 	}
 	return diags
@@ -193,7 +196,7 @@ var (
 // dependency that can enforce this ordering.
 type nodeCheckStart struct{}
 
-func (n *nodeCheckStart) Execute(context EvalContext, operation walkOperation) tfdiags.Diagnostics {
+func (n *nodeCheckStart) Execute(_ context.Context, _ EvalContext, _ walkOperation) tfdiags.Diagnostics {
 	// This node doesn't actually do anything, except simplify the underlying
 	// graph structure.
 	return nil

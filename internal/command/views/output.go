@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package views
@@ -82,13 +84,13 @@ func (v *OutputHuman) Output(name string, outputs map[string]*states.OutputValue
 		sort.Strings(ks)
 
 		for _, k := range ks {
-			v := outputs[k]
-			if v.Sensitive {
+			vs := outputs[k]
+			if vs.Sensitive && !v.view.showSensitive {
 				outputBuf.WriteString(fmt.Sprintf("%s = <sensitive>\n", k))
 				continue
 			}
 
-			result := repl.FormatValue(v.Value, 0)
+			result := repl.FormatValue(vs.Value, 0)
 			outputBuf.WriteString(fmt.Sprintf("%s = %s\n", k, result))
 		}
 	}
@@ -218,9 +220,10 @@ func (v *OutputJSON) Output(name string, outputs map[string]*states.OutputValue)
 	// for compatibility, so this is an emulation of the JSON
 	// serialization of outputs used in state format version 3.
 	type OutputMeta struct {
-		Sensitive bool            `json:"sensitive"`
-		Type      json.RawMessage `json:"type"`
-		Value     json.RawMessage `json:"value"`
+		Sensitive  bool            `json:"sensitive"`
+		Deprecated string          `json:"deprecated,omitempty"`
+		Type       json.RawMessage `json:"type"`
+		Value      json.RawMessage `json:"value"`
 	}
 	outputMetas := map[string]OutputMeta{}
 
@@ -236,9 +239,10 @@ func (v *OutputJSON) Output(name string, outputs map[string]*states.OutputValue)
 			return diags
 		}
 		outputMetas[n] = OutputMeta{
-			Sensitive: os.Sensitive,
-			Type:      json.RawMessage(jsonType),
-			Value:     json.RawMessage(jsonVal),
+			Sensitive:  os.Sensitive,
+			Deprecated: os.Deprecated,
+			Type:       json.RawMessage(jsonType),
+			Value:      json.RawMessage(jsonVal),
 		}
 	}
 

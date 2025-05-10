@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package inmem
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/opentofu/opentofu/internal/backend"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/legacy/helper/schema"
 	statespkg "github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/states/remote"
@@ -44,7 +47,7 @@ func Reset() {
 }
 
 // New creates a new backend for Inmem remote state.
-func New() backend.Backend {
+func New(enc encryption.StateEncryption) backend.Backend {
 	// Set the schema
 	s := &schema.Backend{
 		Schema: map[string]*schema.Schema{
@@ -55,13 +58,14 @@ func New() backend.Backend {
 			},
 		},
 	}
-	backend := &Backend{Backend: s}
+	backend := &Backend{Backend: s, encryption: enc}
 	backend.Backend.ConfigureFunc = backend.configure
 	return backend
 }
 
 type Backend struct {
 	*schema.Backend
+	encryption encryption.StateEncryption
 }
 
 func (b *Backend) configure(ctx context.Context) error {
@@ -72,9 +76,7 @@ func (b *Backend) configure(ctx context.Context) error {
 		Name: backend.DefaultStateName,
 	}
 
-	states.m[backend.DefaultStateName] = &remote.State{
-		Client: defaultClient,
-	}
+	states.m[backend.DefaultStateName] = remote.NewState(defaultClient, b.encryption)
 
 	// set the default client lock info per the test config
 	data := schema.FromContextBackendConfig(ctx)
@@ -90,7 +92,7 @@ func (b *Backend) configure(ctx context.Context) error {
 	return nil
 }
 
-func (b *Backend) Workspaces() ([]string, error) {
+func (b *Backend) Workspaces(context.Context) ([]string, error) {
 	states.Lock()
 	defer states.Unlock()
 
@@ -104,7 +106,7 @@ func (b *Backend) Workspaces() ([]string, error) {
 	return workspaces, nil
 }
 
-func (b *Backend) DeleteWorkspace(name string, _ bool) error {
+func (b *Backend) DeleteWorkspace(_ context.Context, name string, _ bool) error {
 	states.Lock()
 	defer states.Unlock()
 
@@ -116,17 +118,18 @@ func (b *Backend) DeleteWorkspace(name string, _ bool) error {
 	return nil
 }
 
-func (b *Backend) StateMgr(name string) (statemgr.Full, error) {
+func (b *Backend) StateMgr(_ context.Context, name string) (statemgr.Full, error) {
 	states.Lock()
 	defer states.Unlock()
 
 	s := states.m[name]
 	if s == nil {
-		s = &remote.State{
-			Client: &RemoteClient{
+		s = remote.NewState(
+			&RemoteClient{
 				Name: name,
 			},
-		}
+			b.encryption,
+		)
 		states.m[name] = s
 
 		// to most closely replicate other implementations, we are going to

@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
@@ -16,7 +18,7 @@ func TestMetaCompletePredictWorkspaceName(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// make sure a vars file doesn't interfere
 	err := os.WriteFile(DefaultVarsFilename, nil, 0644)
@@ -27,7 +29,7 @@ func TestMetaCompletePredictWorkspaceName(t *testing.T) {
 	ui := new(cli.MockUi)
 	meta := &Meta{Ui: ui}
 
-	predictor := meta.completePredictWorkspaceName()
+	predictor := meta.completePredictWorkspaceName(t.Context())
 
 	got := predictor.Predict(complete.Args{
 		Last: "",

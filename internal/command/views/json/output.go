@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package json
@@ -15,10 +17,11 @@ import (
 )
 
 type Output struct {
-	Sensitive bool            `json:"sensitive"`
-	Type      json.RawMessage `json:"type,omitempty"`
-	Value     json.RawMessage `json:"value,omitempty"`
-	Action    ChangeAction    `json:"action,omitempty"`
+	Sensitive  bool            `json:"sensitive"`
+	Deprecated string          `json:"deprecated,omitempty"`
+	Type       json.RawMessage `json:"type,omitempty"`
+	Value      json.RawMessage `json:"value,omitempty"`
+	Action     ChangeAction    `json:"action,omitempty"`
 }
 
 type Outputs map[string]Output
@@ -51,9 +54,10 @@ func OutputsFromMap(outputValues map[string]*states.OutputValue) (Outputs, tfdia
 		}
 
 		outputs[name] = Output{
-			Sensitive: ov.Sensitive,
-			Type:      json.RawMessage(valueType),
-			Value:     redactedValue,
+			Sensitive:  ov.Sensitive,
+			Deprecated: ov.Deprecated,
+			Type:       json.RawMessage(valueType),
+			Value:      redactedValue,
 		}
 	}
 

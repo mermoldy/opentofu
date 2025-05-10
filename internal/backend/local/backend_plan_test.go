@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package local
@@ -19,6 +21,7 @@ import (
 	"github.com/opentofu/opentofu/internal/command/views"
 	"github.com/opentofu/opentofu/internal/configs/configschema"
 	"github.com/opentofu/opentofu/internal/depsfile"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/initwd"
 	"github.com/opentofu/opentofu/internal/plans"
 	"github.com/opentofu/opentofu/internal/plans/planfile"
@@ -32,8 +35,7 @@ func TestLocal_planBasic(t *testing.T) {
 	b := TestLocal(t)
 	p := TestLocalProvider(t, b, "test", planFixtureSchema())
 
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 	op.PlanRefresh = true
 
 	run, err := b.Operation(context.Background(), op)
@@ -70,8 +72,7 @@ func TestLocal_planInAutomation(t *testing.T) {
 	//
 	// Ideally this test would be replaced by a call-logging mock view, but
 	// that's future work.
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 	op.PlanRefresh = true
 
 	run, err := b.Operation(context.Background(), op)
@@ -92,8 +93,7 @@ func TestLocal_planNoConfig(t *testing.T) {
 	b := TestLocal(t)
 	TestLocalProvider(t, b, "test", providers.ProviderSchema{})
 
-	op, configCleanup, done := testOperationPlan(t, "./testdata/empty")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/empty")
 	op.PlanRefresh = true
 
 	run, err := b.Operation(context.Background(), op)
@@ -137,8 +137,7 @@ func TestLocal_plan_context_error(t *testing.T) {
 	}
 	b.ContextOpts.Parallelism = -1
 
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 
 	// we coerce a failure in Context() by omitting the provider schema
 	run, err := b.Operation(context.Background(), op)
@@ -164,23 +163,23 @@ func TestLocal_planOutputsChanged(t *testing.T) {
 		ss.SetOutputValue(addrs.AbsOutputValue{
 			Module:      addrs.RootModuleInstance,
 			OutputValue: addrs.OutputValue{Name: "changed"},
-		}, cty.StringVal("before"), false)
+		}, cty.StringVal("before"), false, "")
 		ss.SetOutputValue(addrs.AbsOutputValue{
 			Module:      addrs.RootModuleInstance,
 			OutputValue: addrs.OutputValue{Name: "sensitive_before"},
-		}, cty.StringVal("before"), true)
+		}, cty.StringVal("before"), true, "")
 		ss.SetOutputValue(addrs.AbsOutputValue{
 			Module:      addrs.RootModuleInstance,
 			OutputValue: addrs.OutputValue{Name: "sensitive_after"},
-		}, cty.StringVal("before"), false)
+		}, cty.StringVal("before"), false, "")
 		ss.SetOutputValue(addrs.AbsOutputValue{
 			Module:      addrs.RootModuleInstance,
 			OutputValue: addrs.OutputValue{Name: "removed"}, // not present in the config fixture
-		}, cty.StringVal("before"), false)
+		}, cty.StringVal("before"), false, "")
 		ss.SetOutputValue(addrs.AbsOutputValue{
 			Module:      addrs.RootModuleInstance,
 			OutputValue: addrs.OutputValue{Name: "unchanged"},
-		}, cty.StringVal("before"), false)
+		}, cty.StringVal("before"), false, "")
 		// NOTE: This isn't currently testing the situation where the new
 		// value of an output is unknown, because to do that requires there to
 		// be at least one managed resource Create action in the plan and that
@@ -193,8 +192,7 @@ func TestLocal_planOutputsChanged(t *testing.T) {
 	outDir := t.TempDir()
 	defer os.RemoveAll(outDir)
 	planPath := filepath.Join(outDir, "plan.tfplan")
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan-outputs-changed")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan-outputs-changed")
 	op.PlanRefresh = true
 	op.PlanOutPath = planPath
 	cfg := cty.ObjectVal(map[string]cty.Value{
@@ -245,13 +243,12 @@ func TestLocal_planModuleOutputsChanged(t *testing.T) {
 		ss.SetOutputValue(addrs.AbsOutputValue{
 			Module:      addrs.RootModuleInstance.Child("mod", addrs.NoKey),
 			OutputValue: addrs.OutputValue{Name: "changed"},
-		}, cty.StringVal("before"), false)
+		}, cty.StringVal("before"), false, "")
 	}))
 	outDir := t.TempDir()
 	defer os.RemoveAll(outDir)
 	planPath := filepath.Join(outDir, "plan.tfplan")
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan-module-outputs-changed")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan-module-outputs-changed")
 	op.PlanRefresh = true
 	op.PlanOutPath = planPath
 	cfg := cty.ObjectVal(map[string]cty.Value{
@@ -291,8 +288,7 @@ func TestLocal_planTainted(t *testing.T) {
 	testStateFile(t, b.StatePath, testPlanState_tainted())
 	outDir := t.TempDir()
 	planPath := filepath.Join(outDir, "plan.tfplan")
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 	op.PlanRefresh = true
 	op.PlanOutPath = planPath
 	cfg := cty.ObjectVal(map[string]cty.Value{
@@ -366,12 +362,12 @@ func TestLocal_planDeposedOnly(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	}))
 	outDir := t.TempDir()
 	planPath := filepath.Join(outDir, "plan.tfplan")
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 	op.PlanRefresh = true
 	op.PlanOutPath = planPath
 	cfg := cty.ObjectVal(map[string]cty.Value{
@@ -461,8 +457,7 @@ func TestLocal_planTainted_createBeforeDestroy(t *testing.T) {
 	testStateFile(t, b.StatePath, testPlanState_tainted())
 	outDir := t.TempDir()
 	planPath := filepath.Join(outDir, "plan.tfplan")
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan-cbd")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan-cbd")
 	op.PlanRefresh = true
 	op.PlanOutPath = planPath
 	cfg := cty.ObjectVal(map[string]cty.Value{
@@ -517,8 +512,7 @@ func TestLocal_planRefreshFalse(t *testing.T) {
 	p := TestLocalProvider(t, b, "test", planFixtureSchema())
 	testStateFile(t, b.StatePath, testPlanState())
 
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 
 	run, err := b.Operation(context.Background(), op)
 	if err != nil {
@@ -551,8 +545,7 @@ func TestLocal_planDestroy(t *testing.T) {
 	outDir := t.TempDir()
 	planPath := filepath.Join(outDir, "plan.tfplan")
 
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 	op.PlanMode = plans.DestroyMode
 	op.PlanRefresh = true
 	op.PlanOutPath = planPath
@@ -603,8 +596,7 @@ func TestLocal_planDestroy_withDataSources(t *testing.T) {
 	outDir := t.TempDir()
 	planPath := filepath.Join(outDir, "plan.tfplan")
 
-	op, configCleanup, done := testOperationPlan(t, "./testdata/destroy-with-ds")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/destroy-with-ds")
 	op.PlanMode = plans.DestroyMode
 	op.PlanRefresh = true
 	op.PlanOutPath = planPath
@@ -634,7 +626,7 @@ func TestLocal_planDestroy_withDataSources(t *testing.T) {
 		t.Fatal("plan should not be empty")
 	}
 
-	// Data source should still exist in the the plan file
+	// Data source should still exist in the plan file
 	plan := testReadPlan(t, planPath)
 	if len(plan.Changes.Resources) != 2 {
 		t.Fatalf("Expected exactly 1 resource for destruction, %d given: %q",
@@ -677,8 +669,7 @@ func TestLocal_planOutPathNoChange(t *testing.T) {
 	outDir := t.TempDir()
 	planPath := filepath.Join(outDir, "plan.tfplan")
 
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 	op.PlanOutPath = planPath
 	cfg := cty.ObjectVal(map[string]cty.Value{
 		"path": cty.StringVal(b.StatePath),
@@ -714,10 +705,10 @@ func TestLocal_planOutPathNoChange(t *testing.T) {
 	}
 }
 
-func testOperationPlan(t *testing.T, configDir string) (*backend.Operation, func(), func(*testing.T) *terminal.TestOutput) {
+func testOperationPlan(t *testing.T, configDir string) (*backend.Operation, func(*testing.T) *terminal.TestOutput) {
 	t.Helper()
 
-	_, configLoader, configCleanup := initwd.MustLoadConfigForTests(t, configDir, "tests")
+	_, configLoader := initwd.MustLoadConfigForTests(t, configDir, "tests")
 
 	streams, done := terminal.StreamsForTesting(t)
 	view := views.NewOperation(arguments.ViewHuman, false, views.NewView(streams))
@@ -725,16 +716,17 @@ func testOperationPlan(t *testing.T, configDir string) (*backend.Operation, func
 	// Many of our tests use an overridden "test" provider that's just in-memory
 	// inside the test process, not a separate plugin on disk.
 	depLocks := depsfile.NewLocks()
-	depLocks.SetProviderOverridden(addrs.MustParseProviderSourceString("registry.terraform.io/hashicorp/test"))
+	depLocks.SetProviderOverridden(addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/test"))
 
 	return &backend.Operation{
 		Type:            backend.OperationTypePlan,
+		Encryption:      encryption.Disabled(),
 		ConfigDir:       configDir,
 		ConfigLoader:    configLoader,
 		StateLocker:     clistate.NewNoopLocker(),
 		View:            view,
 		DependencyLocks: depLocks,
-	}, configCleanup, done
+	}, done
 }
 
 // testPlanState is just a common state that we use for testing plan.
@@ -761,6 +753,7 @@ func testPlanState() *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	return state
 }
@@ -788,6 +781,7 @@ func testPlanState_withDataSource() *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	rootModule.SetResourceInstanceCurrent(
 		addrs.Resource{
@@ -805,6 +799,7 @@ func testPlanState_withDataSource() *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	return state
 }
@@ -832,6 +827,7 @@ func testPlanState_tainted() *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	return state
 }
@@ -839,11 +835,10 @@ func testPlanState_tainted() *states.State {
 func testReadPlan(t *testing.T, path string) *plans.Plan {
 	t.Helper()
 
-	p, err := planfile.Open(path)
+	p, err := planfile.Open(path, encryption.PlanEncryptionDisabled())
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
-	defer p.Close()
 
 	plan, err := p.ReadPlan()
 	if err != nil {
@@ -894,8 +889,7 @@ func TestLocal_invalidOptions(t *testing.T) {
 	b := TestLocal(t)
 	TestLocalProvider(t, b, "test", planFixtureSchema())
 
-	op, configCleanup, done := testOperationPlan(t, "./testdata/plan")
-	defer configCleanup()
+	op, done := testOperationPlan(t, "./testdata/plan")
 	op.PlanRefresh = true
 	op.PlanMode = plans.RefreshOnlyMode
 	op.ForceReplace = []addrs.AbsResourceInstance{mustResourceInstanceAddr("test_instance.foo")}

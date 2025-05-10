@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package main
@@ -13,13 +15,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
-	"github.com/apparentlymart/go-shquot/shquot"
 	"github.com/hashicorp/go-plugin"
 	"github.com/hashicorp/terraform-svchost/disco"
 	"github.com/mattn/go-shellwords"
 	"github.com/mitchellh/cli"
 	"github.com/mitchellh/colorstring"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/command/cliconfig"
 	"github.com/opentofu/opentofu/internal/command/format"
@@ -27,8 +30,8 @@ import (
 	"github.com/opentofu/opentofu/internal/httpclient"
 	"github.com/opentofu/opentofu/internal/logging"
 	"github.com/opentofu/opentofu/internal/terminal"
+	"github.com/opentofu/opentofu/internal/tracing"
 	"github.com/opentofu/opentofu/version"
-	"go.opentelemetry.io/otel/trace"
 
 	backendInit "github.com/opentofu/opentofu/internal/backend/init"
 )
@@ -67,25 +70,21 @@ func main() {
 func realMain() int {
 	defer logging.PanicHandler()
 
-	var err error
-
-	err = openTelemetryInit()
+	ctx, err := tracing.OpenTelemetryInit(context.Background())
 	if err != nil {
 		// openTelemetryInit can only fail if OpenTofu was run with an
 		// explicit environment variable to enable telemetry collection,
 		// so in typical use we cannot get here.
 		Ui.Error(fmt.Sprintf("Could not initialize telemetry: %s", err))
-		Ui.Error(fmt.Sprintf("Unset environment variable %s if you don't intend to collect telemetry from OpenTofu.", openTelemetryExporterEnvVar))
+		Ui.Error(fmt.Sprintf("Unset environment variable %s if you don't intend to collect telemetry from OpenTofu.", tracing.OTELExporterEnvVar))
+
 		return 1
 	}
-	var ctx context.Context
-	var otelSpan trace.Span
-	{
-		// At minimum we emit a span covering the entire command execution.
-		_, displayArgs := shquot.POSIXShellSplit(os.Args)
-		ctx, otelSpan = tracer.Start(context.Background(), fmt.Sprintf("tofu %s", displayArgs))
-		defer otelSpan.End()
-	}
+	defer tracing.ForceFlush(5 * time.Second)
+
+	// At minimum, we emit a span covering the entire command execution.
+	ctx, span := tracing.Tracer().Start(ctx, "tofu")
+	defer span.End()
 
 	tmpLogPath := os.Getenv(envTmpLogPath)
 	if tmpLogPath != "" {
@@ -100,21 +99,20 @@ func realMain() int {
 		}
 	}
 
-	log.Printf(
-		"[INFO] OpenTofu version: %s %s",
-		Version, VersionPrerelease)
+	log.Printf("[INFO] OpenTofu version: %s %s", Version, VersionPrerelease)
 	for _, depMod := range version.InterestingDependencies() {
 		log.Printf("[DEBUG] using %s %s", depMod.Path, depMod.Version)
 	}
 	log.Printf("[INFO] Go runtime version: %s", runtime.Version())
 	log.Printf("[INFO] CLI args: %#v", os.Args)
-	if ExperimentsAllowed() {
+	if experimentsAreAllowed() {
 		log.Printf("[INFO] This build of OpenTofu allows using experimental features")
 	}
 
 	streams, err := terminal.Init()
 	if err != nil {
 		Ui.Error(fmt.Sprintf("Failed to configure the terminal: %s", err))
+
 		return 1
 	}
 	if streams.Stdout.IsTerminal() {
@@ -138,7 +136,7 @@ func realMain() int {
 	// path in the TERRAFORM_CONFIG_FILE environment variable (though probably
 	// ill-advised) will be resolved relative to the true working directory,
 	// not the overridden one.
-	config, diags := cliconfig.LoadConfig()
+	config, diags := cliconfig.LoadConfig(ctx)
 
 	if len(diags) > 0 {
 		// Since we haven't instantiated a command.Meta yet, we need to do
@@ -183,7 +181,9 @@ func realMain() int {
 	}
 	services.SetUserAgent(httpclient.OpenTofuUserAgent(version.String()))
 
-	providerSrc, diags := providerSource(config.ProviderInstallation, services)
+	modulePkgFetcher := remoteModulePackageFetcher(ctx, config.OCICredentialsPolicy)
+
+	providerSrc, diags := providerSource(config.ProviderInstallation, services, config.OCICredentialsPolicy)
 	if len(diags) > 0 {
 		Ui.Error("There are some problems with the provider_installation configuration:")
 		for _, diag := range diags {
@@ -241,12 +241,12 @@ func realMain() int {
 	}
 
 	// In tests, Commands may already be set to provide mock commands
-	if Commands == nil {
+	if commands == nil {
 		// Commands get to hold on to the original working directory here,
 		// in case they need to refer back to it for any special reason, though
 		// they should primarily be working with the override working directory
 		// that we've now switched to above.
-		initCommands(ctx, originalWd, streams, config, services, providerSrc, providerDevOverrides, unmanagedProviders)
+		initCommands(ctx, originalWd, streams, config, services, modulePkgFetcher, providerSrc, providerDevOverrides, unmanagedProviders)
 	}
 
 	// Attempt to ensure the config directory exists.
@@ -263,7 +263,7 @@ func realMain() int {
 	// Build the CLI so far, we do this so we can query the subcommand.
 	cliRunner := &cli.CLI{
 		Args:       args,
-		Commands:   Commands,
+		Commands:   commands,
 		HelpFunc:   helpFunc,
 		HelpWriter: os.Stdout,
 	}
@@ -299,11 +299,12 @@ func realMain() int {
 	// Rebuild the CLI with any modified args.
 	log.Printf("[INFO] CLI command args: %#v", args)
 	cliRunner = &cli.CLI{
-		Name:       binName,
-		Args:       args,
-		Commands:   Commands,
-		HelpFunc:   helpFunc,
-		HelpWriter: os.Stdout,
+		Name:           binName,
+		Args:           args,
+		Commands:       commands,
+		HiddenCommands: getAliasCommandKeys(),
+		HelpFunc:       helpFunc,
+		HelpWriter:     os.Stdout,
 
 		Autocomplete:          true,
 		AutocompleteInstall:   "install-autocomplete",
@@ -327,9 +328,9 @@ func realMain() int {
 		// for typos of top-level commands. For a subcommand typo, like
 		// "tofu state push", cmd would be "state" here and thus would
 		// be considered to exist, and it would print out its own usage message.
-		if _, exists := Commands[cmd]; !exists {
-			suggestions := make([]string, 0, len(Commands))
-			for name := range Commands {
+		if _, exists := commands[cmd]; !exists {
+			suggestions := make([]string, 0, len(commands))
+			for name := range commands {
 				suggestions = append(suggestions, name)
 			}
 			suggestion := didyoumean.NameSuggestion(cmd, suggestions)
@@ -500,8 +501,8 @@ func extractChdirOption(args []string) (string, []string, error) {
 	return argValue, newArgs, nil
 }
 
-// Creates the the configuration directory.
-// `configDir` should refer to `~/.terraform.d` or its equivalent
+// Creates the configuration directory.
+// `configDir` should refer to `~/.terraform.d`, `$XDG_CONFIG_HOME/opentofu` or its equivalent
 // on non-UNIX platforms.
 func mkConfigDir(configDir string) error {
 	err := os.Mkdir(configDir, os.ModePerm)

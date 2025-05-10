@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
@@ -31,6 +33,7 @@ func TestTaint(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	statePath := testStateFile(t, state)
@@ -71,6 +74,7 @@ func TestTaint_lockedState(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	statePath := testStateFile(t, state)
@@ -105,7 +109,7 @@ func TestTaint_lockedState(t *testing.T) {
 
 func TestTaint_backup(t *testing.T) {
 	// Get a temp cwd
-	testCwd(t)
+	testCwdTemp(t)
 
 	// Write the temp state
 	state := states.BuildState(func(s *states.SyncState) {
@@ -123,6 +127,7 @@ func TestTaint_backup(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	testStateFileDefault(t, state)
@@ -149,7 +154,7 @@ func TestTaint_backup(t *testing.T) {
 
 func TestTaint_backupDisable(t *testing.T) {
 	// Get a temp cwd
-	testCwd(t)
+	testCwdTemp(t)
 
 	// Write the temp state
 	state := states.BuildState(func(s *states.SyncState) {
@@ -167,6 +172,7 @@ func TestTaint_backupDisable(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	testStateFileDefault(t, state)
@@ -216,7 +222,7 @@ func TestTaint_badState(t *testing.T) {
 
 func TestTaint_defaultState(t *testing.T) {
 	// Get a temp cwd
-	testCwd(t)
+	testCwdTemp(t)
 
 	// Write the temp state
 	state := states.BuildState(func(s *states.SyncState) {
@@ -234,6 +240,7 @@ func TestTaint_defaultState(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	testStateFileDefault(t, state)
@@ -259,7 +266,7 @@ func TestTaint_defaultState(t *testing.T) {
 
 func TestTaint_defaultWorkspaceState(t *testing.T) {
 	// Get a temp cwd
-	testCwd(t)
+	testCwdTemp(t)
 
 	state := states.BuildState(func(s *states.SyncState) {
 		s.SetResourceInstanceCurrent(
@@ -276,6 +283,7 @@ func TestTaint_defaultWorkspaceState(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	testWorkspace := "development"
@@ -315,6 +323,7 @@ func TestTaint_missing(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	statePath := testStateFile(t, state)
@@ -353,6 +362,7 @@ func TestTaint_missingAllow(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	statePath := testStateFile(t, state)
@@ -391,7 +401,7 @@ because -allow-missing was set.
 
 func TestTaint_stateOut(t *testing.T) {
 	// Get a temp cwd
-	testCwd(t)
+	testCwdTemp(t)
 
 	// Write the temp state
 	state := states.BuildState(func(s *states.SyncState) {
@@ -409,6 +419,7 @@ func TestTaint_stateOut(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	testStateFileDefault(t, state)
@@ -450,6 +461,7 @@ func TestTaint_module(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 		s.SetResourceInstanceCurrent(
 			addrs.Resource{
@@ -465,6 +477,7 @@ func TestTaint_module(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	statePath := testStateFile(t, state)
@@ -493,7 +506,7 @@ func TestTaint_checkRequiredVersion(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("command-check-required-version"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// Write the temp state
 	state := states.BuildState(func(s *states.SyncState) {
@@ -511,6 +524,7 @@ func TestTaint_checkRequiredVersion(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 	path := testStateFile(t, state)
@@ -546,22 +560,22 @@ func TestTaint_checkRequiredVersion(t *testing.T) {
 const testTaintStr = `
 test_instance.foo: (tainted)
   ID = bar
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
 `
 
 const testTaintDefaultStr = `
 test_instance.foo:
   ID = bar
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
 `
 
 const testTaintModuleStr = `
 test_instance.foo:
   ID = bar
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
 
 module.child:
   test_instance.blah: (tainted)
     ID = blah
-    provider = provider["registry.terraform.io/hashicorp/test"]
+    provider = provider["registry.opentofu.org/hashicorp/test"]
 `

@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
@@ -10,10 +12,12 @@ import (
 	"testing"
 
 	"github.com/mitchellh/cli"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/backend"
 	"github.com/opentofu/opentofu/internal/backend/local"
 	"github.com/opentofu/opentofu/internal/backend/remote-state/inmem"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/states/statemgr"
 
@@ -24,11 +28,11 @@ func TestWorkspace_createAndChange(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	newCmd := &WorkspaceNewCommand{}
 
-	current, _ := newCmd.Workspace()
+	current, _ := newCmd.Workspace(t.Context())
 	if current != backend.DefaultStateName {
 		t.Fatal("current workspace should be 'default'")
 	}
@@ -41,7 +45,7 @@ func TestWorkspace_createAndChange(t *testing.T) {
 		t.Fatalf("bad: %d\n\n%s", code, ui.ErrorWriter)
 	}
 
-	current, _ = newCmd.Workspace()
+	current, _ = newCmd.Workspace(t.Context())
 	if current != "test" {
 		t.Fatalf("current workspace should be 'test', got %q", current)
 	}
@@ -54,7 +58,7 @@ func TestWorkspace_createAndChange(t *testing.T) {
 		t.Fatalf("bad: %d\n\n%s", code, ui.ErrorWriter)
 	}
 
-	current, _ = newCmd.Workspace()
+	current, _ = newCmd.Workspace(t.Context())
 	if current != backend.DefaultStateName {
 		t.Fatal("current workspace should be 'default'")
 	}
@@ -67,7 +71,7 @@ func TestWorkspace_createAndList(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// make sure a vars file doesn't interfere
 	err := os.WriteFile(
@@ -115,7 +119,7 @@ func TestWorkspace_createAndShow(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// make sure a vars file doesn't interfere
 	err := os.WriteFile(
@@ -183,7 +187,7 @@ func TestWorkspace_createInvalid(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	envs := []string{"test_a*", "test_b/foo", "../../../test_c", "好_d"}
 
@@ -220,7 +224,7 @@ func TestWorkspace_createInvalid(t *testing.T) {
 func TestWorkspace_createWithState(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("inmem-backend"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 	defer inmem.Reset()
 
 	// init the backend
@@ -248,10 +252,11 @@ func TestWorkspace_createWithState(t *testing.T) {
 				Provider: addrs.NewDefaultProvider("test"),
 				Module:   addrs.RootModule,
 			},
+			addrs.NoKey,
 		)
 	})
 
-	err := statemgr.NewFilesystem("test.tfstate").WriteState(originalState)
+	err := statemgr.WriteAndPersist(statemgr.NewFilesystem("test.tfstate", encryption.StateEncryptionDisabled()), originalState, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,14 +273,14 @@ func TestWorkspace_createWithState(t *testing.T) {
 	}
 
 	newPath := filepath.Join(local.DefaultWorkspaceDir, "test", DefaultStateFilename)
-	envState := statemgr.NewFilesystem(newPath)
+	envState := statemgr.NewFilesystem(newPath, encryption.StateEncryptionDisabled())
 	err = envState.RefreshState()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	b := backend.TestBackendConfig(t, inmem.New(), nil)
-	sMgr, err := b.StateMgr(workspace)
+	b := backend.TestBackendConfig(t, inmem.New(encryption.StateEncryptionDisabled()), nil)
+	sMgr, err := b.StateMgr(t.Context(), workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +295,7 @@ func TestWorkspace_createWithState(t *testing.T) {
 func TestWorkspace_delete(t *testing.T) {
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// create the workspace directories
 	if err := os.MkdirAll(filepath.Join(local.DefaultWorkspaceDir, "test"), 0755); err != nil {
@@ -311,7 +316,7 @@ func TestWorkspace_delete(t *testing.T) {
 		Meta: Meta{Ui: ui, View: view},
 	}
 
-	current, _ := delCmd.Workspace()
+	current, _ := delCmd.Workspace(t.Context())
 	if current != "test" {
 		t.Fatal("wrong workspace:", current)
 	}
@@ -334,7 +339,7 @@ func TestWorkspace_delete(t *testing.T) {
 		t.Fatalf("error deleting workspace: %s", ui.ErrorWriter)
 	}
 
-	current, _ = delCmd.Workspace()
+	current, _ = delCmd.Workspace(t.Context())
 	if current != backend.DefaultStateName {
 		t.Fatalf("wrong workspace: %q", current)
 	}
@@ -343,7 +348,7 @@ func TestWorkspace_delete(t *testing.T) {
 func TestWorkspace_deleteInvalid(t *testing.T) {
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// choose an invalid workspace name
 	workspace := "test workspace"
@@ -375,7 +380,7 @@ func TestWorkspace_deleteInvalid(t *testing.T) {
 func TestWorkspace_deleteWithState(t *testing.T) {
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// create the workspace directories
 	if err := os.MkdirAll(filepath.Join(local.DefaultWorkspaceDir, "test"), 0755); err != nil {
@@ -442,11 +447,11 @@ func TestWorkspace_selectWithOrCreate(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	selectCmd := &WorkspaceSelectCommand{}
 
-	current, _ := selectCmd.Workspace()
+	current, _ := selectCmd.Workspace(t.Context())
 	if current != backend.DefaultStateName {
 		t.Fatal("current workspace should be 'default'")
 	}
@@ -459,7 +464,7 @@ func TestWorkspace_selectWithOrCreate(t *testing.T) {
 		t.Fatalf("bad: %d\n\n%s", code, ui.ErrorWriter)
 	}
 
-	current, _ = selectCmd.Workspace()
+	current, _ = selectCmd.Workspace(t.Context())
 	if current != "test" {
 		t.Fatalf("current workspace should be 'test', got %q", current)
 	}

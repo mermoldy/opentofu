@@ -1,10 +1,13 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package configs
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
@@ -27,13 +30,14 @@ func TestModuleOverrideVariable(t *testing.T) {
 			Description:    "b_override description",
 			DescriptionSet: true,
 			Default:        cty.StringVal("b_override"),
+			Deprecated:     "b_override deprecated",
 			Nullable:       false,
 			NullableSet:    true,
 			Type:           cty.String,
 			ConstraintType: cty.String,
 			ParsingMode:    VariableParseLiteral,
 			DeclRange: hcl.Range{
-				Filename: "testdata/valid-modules/override-variable/primary.tf",
+				Filename: filepath.FromSlash("testdata/valid-modules/override-variable/primary.tf"),
 				Start: hcl.Pos{
 					Line:   1,
 					Column: 1,
@@ -51,13 +55,14 @@ func TestModuleOverrideVariable(t *testing.T) {
 			Description:    "base description",
 			DescriptionSet: true,
 			Default:        cty.StringVal("b_override partial"),
+			Deprecated:     "b_override deprecated",
 			Nullable:       true,
 			NullableSet:    false,
 			Type:           cty.String,
 			ConstraintType: cty.String,
 			ParsingMode:    VariableParseLiteral,
 			DeclRange: hcl.Range{
-				Filename: "testdata/valid-modules/override-variable/primary.tf",
+				Filename: filepath.FromSlash("testdata/valid-modules/override-variable/primary.tf"),
 				Start: hcl.Pos{
 					Line:   7,
 					Column: 1,
@@ -93,22 +98,9 @@ func TestModuleOverrideModule(t *testing.T) {
 		Name:          "example",
 		SourceAddr:    addrs.ModuleSourceLocal("./example2-a_override"),
 		SourceAddrRaw: "./example2-a_override",
-		SourceAddrRange: hcl.Range{
-			Filename: "testdata/valid-modules/override-module/a_override.tf",
-			Start: hcl.Pos{
-				Line:   3,
-				Column: 12,
-				Byte:   31,
-			},
-			End: hcl.Pos{
-				Line:   3,
-				Column: 35,
-				Byte:   54,
-			},
-		},
-		SourceSet: true,
+		SourceSet:     true,
 		DeclRange: hcl.Range{
-			Filename: "testdata/valid-modules/override-module/primary.tf",
+			Filename: filepath.FromSlash("testdata/valid-modules/override-module/primary.tf"),
 			Start: hcl.Pos{
 				Line:   2,
 				Column: 1,
@@ -125,7 +117,7 @@ func TestModuleOverrideModule(t *testing.T) {
 				hcl.TraverseRoot{
 					Name: "null_resource",
 					SrcRange: hcl.Range{
-						Filename: "testdata/valid-modules/override-module/primary.tf",
+						Filename: filepath.FromSlash("testdata/valid-modules/override-module/primary.tf"),
 						Start:    hcl.Pos{Line: 11, Column: 17, Byte: 149},
 						End:      hcl.Pos{Line: 11, Column: 30, Byte: 162},
 					},
@@ -133,7 +125,7 @@ func TestModuleOverrideModule(t *testing.T) {
 				hcl.TraverseAttr{
 					Name: "test",
 					SrcRange: hcl.Range{
-						Filename: "testdata/valid-modules/override-module/primary.tf",
+						Filename: filepath.FromSlash("testdata/valid-modules/override-module/primary.tf"),
 						Start:    hcl.Pos{Line: 11, Column: 30, Byte: 162},
 						End:      hcl.Pos{Line: 11, Column: 35, Byte: 167},
 					},
@@ -145,7 +137,7 @@ func TestModuleOverrideModule(t *testing.T) {
 				InChild: &ProviderConfigRef{
 					Name: "test",
 					NameRange: hcl.Range{
-						Filename: "testdata/valid-modules/override-module/b_override.tf",
+						Filename: filepath.FromSlash("testdata/valid-modules/override-module/b_override.tf"),
 						Start:    hcl.Pos{Line: 7, Column: 5, Byte: 97},
 						End:      hcl.Pos{Line: 7, Column: 9, Byte: 101},
 					},
@@ -153,13 +145,13 @@ func TestModuleOverrideModule(t *testing.T) {
 				InParent: &ProviderConfigRef{
 					Name: "test",
 					NameRange: hcl.Range{
-						Filename: "testdata/valid-modules/override-module/b_override.tf",
+						Filename: filepath.FromSlash("testdata/valid-modules/override-module/b_override.tf"),
 						Start:    hcl.Pos{Line: 7, Column: 12, Byte: 104},
 						End:      hcl.Pos{Line: 7, Column: 16, Byte: 108},
 					},
 					Alias: "b_override",
 					AliasRange: &hcl.Range{
-						Filename: "testdata/valid-modules/override-module/b_override.tf",
+						Filename: filepath.FromSlash("testdata/valid-modules/override-module/b_override.tf"),
 						Start:    hcl.Pos{Line: 7, Column: 16, Byte: 108},
 						End:      hcl.Pos{Line: 7, Column: 27, Byte: 119},
 					},
@@ -172,6 +164,8 @@ func TestModuleOverrideModule(t *testing.T) {
 	// is not a useful way to assert on that.
 	gotConfig := got.Config
 	got.Config = nil
+	got.Source = nil
+	got.Variables = nil
 
 	assertResultDeepEqual(t, got, want)
 
@@ -322,7 +316,7 @@ func TestModuleOverrideResourceFQNs(t *testing.T) {
 	wantProviderCfg := &ProviderConfigRef{
 		Name: "bar-test",
 		NameRange: hcl.Range{
-			Filename: "testdata/valid-modules/override-resource-provider/a_override.tf",
+			Filename: filepath.FromSlash("testdata/valid-modules/override-resource-provider/a_override.tf"),
 			Start:    hcl.Pos{Line: 2, Column: 14, Byte: 51},
 			End:      hcl.Pos{Line: 2, Column: 22, Byte: 59},
 		},

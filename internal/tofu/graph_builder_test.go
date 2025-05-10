@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -23,7 +26,7 @@ func TestBasicGraphBuilder(t *testing.T) {
 		},
 	}
 
-	g, err := b.Build(addrs.RootModuleInstance)
+	g, err := b.Build(t.Context(), addrs.RootModuleInstance)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -47,7 +50,7 @@ func TestBasicGraphBuilder_validate(t *testing.T) {
 		},
 	}
 
-	_, err := b.Build(addrs.RootModuleInstance)
+	_, err := b.Build(t.Context(), addrs.RootModuleInstance)
 	if err == nil {
 		t.Fatal("should error")
 	}
@@ -57,7 +60,7 @@ type testBasicGraphBuilderTransform struct {
 	V dag.Vertex
 }
 
-func (t *testBasicGraphBuilderTransform) Transform(g *Graph) error {
+func (t *testBasicGraphBuilderTransform) Transform(_ context.Context, g *Graph) error {
 	g.Add(t.V)
 	return nil
 }

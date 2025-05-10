@@ -1,11 +1,16 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
+	"github.com/opentofu/opentofu/internal/dag"
 )
 
 // RootVariableTransformer is a GraphTransformer that adds all the root
@@ -18,13 +23,9 @@ type RootVariableTransformer struct {
 	Config *configs.Config
 
 	RawValues InputValues
-
-	// Planning must be set to true when building a planning graph, and must be
-	// false when building an apply graph.
-	Planning bool
 }
 
-func (t *RootVariableTransformer) Transform(g *Graph) error {
+func (t *RootVariableTransformer) Transform(_ context.Context, g *Graph) error {
 	// We can have no variables if we have no config.
 	if t.Config == nil {
 		return nil
@@ -42,9 +43,19 @@ func (t *RootVariableTransformer) Transform(g *Graph) error {
 			},
 			Config:   v,
 			RawValue: t.RawValues[v.Name],
-			Planning: t.Planning,
 		}
 		g.Add(node)
+
+		ref := &nodeVariableReference{
+			Addr: addrs.InputVariable{
+				Name: v.Name,
+			},
+			Config: v,
+		}
+		g.Add(ref)
+
+		// Input must be available before reference is valid
+		g.Connect(dag.BasicEdge(ref, node))
 	}
 
 	return nil

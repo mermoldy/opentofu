@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package jsonformat
@@ -253,7 +255,7 @@ func basicState(t *testing.T) *states.State {
 	}
 
 	rootModule.SetLocalValue("foo", cty.StringVal("foo value"))
-	rootModule.SetOutputValue("bar", cty.StringVal("bar value"), false)
+	rootModule.SetOutputValue("bar", cty.StringVal("bar value"), false, "")
 	rootModule.SetResourceInstanceCurrent(
 		addrs.Resource{
 			Mode: addrs.ManagedResourceMode,
@@ -269,6 +271,7 @@ func basicState(t *testing.T) *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	rootModule.SetResourceInstanceCurrent(
 		addrs.Resource{
@@ -285,6 +288,7 @@ func basicState(t *testing.T) *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	return state
 }
@@ -297,14 +301,14 @@ func stateWithMoreOutputs(t *testing.T) *states.State {
 		t.Errorf("root module is nil; want valid object")
 	}
 
-	rootModule.SetOutputValue("string_var", cty.StringVal("string value"), false)
-	rootModule.SetOutputValue("int_var", cty.NumberIntVal(42), false)
-	rootModule.SetOutputValue("bool_var", cty.BoolVal(true), false)
-	rootModule.SetOutputValue("sensitive_var", cty.StringVal("secret!!!"), true)
+	rootModule.SetOutputValue("string_var", cty.StringVal("string value"), false, "")
+	rootModule.SetOutputValue("int_var", cty.NumberIntVal(42), false, "")
+	rootModule.SetOutputValue("bool_var", cty.BoolVal(true), false, "")
+	rootModule.SetOutputValue("sensitive_var", cty.StringVal("secret!!!"), true, "")
 	rootModule.SetOutputValue("map_var", cty.MapVal(map[string]cty.Value{
 		"first":  cty.StringVal("foo"),
 		"second": cty.StringVal("bar"),
-	}), false)
+	}), false, "")
 
 	rootModule.SetResourceInstanceCurrent(
 		addrs.Resource{
@@ -321,6 +325,7 @@ func stateWithMoreOutputs(t *testing.T) *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	return state
 }
@@ -348,6 +353,7 @@ func nestedState(t *testing.T) *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	return state
 }
@@ -371,6 +377,7 @@ func deposedState(t *testing.T) *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	return state
 }
@@ -400,6 +407,7 @@ func onlyDeposedState(t *testing.T) *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	rootModule.SetResourceInstanceDeposed(
 		addrs.Resource{
@@ -417,6 +425,7 @@ func onlyDeposedState(t *testing.T) *states.State {
 			Provider: addrs.NewDefaultProvider("test"),
 			Module:   addrs.RootModule,
 		},
+		addrs.NoKey,
 	)
 	return state
 }

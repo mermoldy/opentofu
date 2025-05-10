@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package depsfile
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -13,11 +16,14 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
+	semconv "go.opentelemetry.io/otel/semconv/v1.30.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/getproviders"
 	"github.com/opentofu/opentofu/internal/replacefile"
 	"github.com/opentofu/opentofu/internal/tfdiags"
+	"github.com/opentofu/opentofu/internal/tracing"
 	"github.com/opentofu/opentofu/version"
 )
 
@@ -88,11 +94,18 @@ func loadLocks(loadParse func(*hclparse.Parser) (*hcl.File, hcl.Diagnostics)) (*
 // the file as a signal to invalidate cached metadata. Consequently, other
 // temporary files may be temporarily created in the same directory as the
 // given filename during the operation.
-func SaveLocksToFile(locks *Locks, filename string) tfdiags.Diagnostics {
+func SaveLocksToFile(ctx context.Context, locks *Locks, filename string) tfdiags.Diagnostics {
+	_, span := tracing.Tracer().Start(ctx, "Save lockfile", trace.WithAttributes(semconv.FileName(filename)))
+	defer span.End()
+
 	src, diags := SaveLocksToBytes(locks)
 	if diags.HasErrors() {
+		tracing.SetSpanError(span, diags)
 		return diags
 	}
+
+	span.AddEvent("Serialized lockfile")
+	span.SetAttributes(semconv.FileSize(len(src)))
 
 	err := replacefile.AtomicWriteFile(filename, src, 0644)
 	if err != nil {
@@ -101,6 +114,7 @@ func SaveLocksToFile(locks *Locks, filename string) tfdiags.Diagnostics {
 			"Failed to update dependency lock file",
 			fmt.Sprintf("Error while writing new dependency lock information to %s: %s.", filename, err),
 		))
+		tracing.SetSpanError(span, diags)
 		return diags
 	}
 

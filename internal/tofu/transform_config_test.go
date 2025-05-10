@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
@@ -13,7 +15,7 @@ import (
 func TestConfigTransformer_nilModule(t *testing.T) {
 	g := Graph{Path: addrs.RootModuleInstance}
 	tf := &ConfigTransformer{}
-	if err := tf.Transform(&g); err != nil {
+	if err := tf.Transform(t.Context(), &g); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
@@ -25,7 +27,7 @@ func TestConfigTransformer_nilModule(t *testing.T) {
 func TestConfigTransformer(t *testing.T) {
 	g := Graph{Path: addrs.RootModuleInstance}
 	tf := &ConfigTransformer{Config: testModule(t, "graph-basic")}
-	if err := tf.Transform(&g); err != nil {
+	if err := tf.Transform(t.Context(), &g); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
@@ -43,7 +45,7 @@ func TestConfigTransformer_mode(t *testing.T) {
 		ModeFilter: true,
 		Mode:       addrs.DataResourceMode,
 	}
-	if err := tf.Transform(&g); err != nil {
+	if err := tf.Transform(t.Context(), &g); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
@@ -64,7 +66,7 @@ func TestConfigTransformer_nonUnique(t *testing.T) {
 		),
 	))
 	tf := &ConfigTransformer{Config: testModule(t, "graph-basic")}
-	if err := tf.Transform(&g); err != nil {
+	if err := tf.Transform(t.Context(), &g); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 

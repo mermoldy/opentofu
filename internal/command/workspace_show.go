@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
@@ -15,6 +17,7 @@ type WorkspaceShowCommand struct {
 }
 
 func (c *WorkspaceShowCommand) Run(args []string) int {
+	ctx := c.CommandContext()
 	args = c.Meta.process(args)
 	cmdFlags := c.Meta.extendedFlagSet("workspace show")
 	cmdFlags.Usage = func() { c.Ui.Error(c.Help()) }
@@ -23,7 +26,7 @@ func (c *WorkspaceShowCommand) Run(args []string) int {
 		return 1
 	}
 
-	workspace, err := c.Workspace()
+	workspace, err := c.Workspace(ctx)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Error selecting workspace: %s", err))
 		return 1

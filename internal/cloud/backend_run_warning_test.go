@@ -1,18 +1,19 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package cloud
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/hashicorp/go-tfe"
 	tfemocks "github.com/hashicorp/go-tfe/mocks"
 	"github.com/mitchellh/cli"
+	"go.uber.org/mock/gomock"
 )
 
 func MockAllRunEvents(t *testing.T, client *tfe.Client) (fullRunID string, emptyRunID string) {
@@ -91,9 +92,7 @@ func TestRunEventWarningsAll(t *testing.T) {
 	client, _ := tfe.NewClient(config)
 	fullRunID, _ := MockAllRunEvents(t, client)
 
-	ctx := context.TODO()
-
-	err := b.renderRunWarnings(ctx, client, fullRunID)
+	err := b.renderRunWarnings(t.Context(), client, fullRunID)
 	if err != nil {
 		t.Fatalf("Expected to not error but received %s", err)
 	}
@@ -123,9 +122,7 @@ func TestRunEventWarningsEmpty(t *testing.T) {
 	client, _ := tfe.NewClient(config)
 	_, emptyRunID := MockAllRunEvents(t, client)
 
-	ctx := context.TODO()
-
-	err := b.renderRunWarnings(ctx, client, emptyRunID)
+	err := b.renderRunWarnings(t.Context(), client, emptyRunID)
 	if err != nil {
 		t.Fatalf("Expected to not error but received %s", err)
 	}
@@ -146,9 +143,7 @@ func TestRunEventWarningsWithError(t *testing.T) {
 	client, _ := tfe.NewClient(config)
 	MockAllRunEvents(t, client)
 
-	ctx := context.TODO()
-
-	err := b.renderRunWarnings(ctx, client, "bad run id")
+	err := b.renderRunWarnings(t.Context(), client, "bad run id")
 
 	if err == nil {
 		t.Error("Expected to error but did not")

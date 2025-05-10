@@ -1,14 +1,18 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/opentofu/opentofu/internal/addrs"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/states/statemgr"
 	"github.com/opentofu/opentofu/internal/tfdiags"
@@ -25,27 +29,27 @@ type StateMeta struct {
 // the backend, but changes the way that backups are done. This configures
 // backups to be timestamped rather than just the original state path plus a
 // backup path.
-func (c *StateMeta) State() (statemgr.Full, error) {
+func (c *StateMeta) State(ctx context.Context, enc encryption.Encryption) (statemgr.Full, error) {
 	var realState statemgr.Full
 	backupPath := c.backupPath
 	stateOutPath := c.statePath
 
 	// use the specified state
 	if c.statePath != "" {
-		realState = statemgr.NewFilesystem(c.statePath)
+		realState = statemgr.NewFilesystem(c.statePath, encryption.StateEncryptionDisabled()) // User specified state file should not be encrypted
 	} else {
 		// Load the backend
-		b, backendDiags := c.Backend(nil)
+		b, backendDiags := c.Backend(ctx, nil, enc.State())
 		if backendDiags.HasErrors() {
 			return nil, backendDiags.Err()
 		}
 
-		workspace, err := c.Workspace()
+		workspace, err := c.Workspace(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		// Check remote Terraform version is compatible
+		// Check remote OpenTofu version is compatible
 		remoteVersionDiags := c.remoteVersionCheck(b, workspace)
 		c.showDiagnostics(remoteVersionDiags)
 		if remoteVersionDiags.HasErrors() {
@@ -53,22 +57,19 @@ func (c *StateMeta) State() (statemgr.Full, error) {
 		}
 
 		// Get the state
-		s, err := b.StateMgr(workspace)
+		s, err := b.StateMgr(ctx, workspace)
 		if err != nil {
 			return nil, err
 		}
 
 		// Get a local backend
-		localRaw, backendDiags := c.Backend(&BackendOpts{ForceLocal: true})
+		localRaw, backendDiags := c.Backend(ctx, &BackendOpts{ForceLocal: true}, enc.State())
 		if backendDiags.HasErrors() {
 			// This should never fail
 			panic(backendDiags.Err())
 		}
 		localB := localRaw.(*backendLocal.Local)
 		_, stateOutPath, _ = localB.StatePaths(workspace)
-		if err != nil {
-			return nil, err
-		}
 
 		realState = s
 	}

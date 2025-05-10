@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"log"
 
 	"github.com/opentofu/opentofu/internal/addrs"
@@ -21,7 +24,7 @@ type checkTransformer struct {
 
 var _ GraphTransformer = (*checkTransformer)(nil)
 
-func (t *checkTransformer) Transform(graph *Graph) error {
+func (t *checkTransformer) Transform(_ context.Context, graph *Graph) error {
 	return t.transform(graph, t.Config, graph.Vertices())
 }
 

@@ -1,18 +1,18 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
 
 import (
-	"os"
 	"reflect"
 	"testing"
 )
 
 func TestPluginPath(t *testing.T) {
-	td := testTempDir(t)
-	defer os.RemoveAll(td)
-	defer testChdir(t, td)()
+	td := testTempDirRealpath(t)
+	t.Chdir(td)
 
 	pluginPath := []string{"a", "b", "c"}
 

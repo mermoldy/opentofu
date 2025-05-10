@@ -1,9 +1,13 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/dag"
@@ -41,14 +45,16 @@ type EvalGraphBuilder struct {
 	// Plugins is a library of plug-in components (providers and
 	// provisioners) available for use.
 	Plugins *contextPlugins
+
+	ProviderFunctionTracker ProviderFunctionMapping
 }
 
 // See GraphBuilder
-func (b *EvalGraphBuilder) Build(path addrs.ModuleInstance) (*Graph, tfdiags.Diagnostics) {
+func (b *EvalGraphBuilder) Build(ctx context.Context, path addrs.ModuleInstance) (*Graph, tfdiags.Diagnostics) {
 	return (&BasicGraphBuilder{
 		Steps: b.Steps(),
 		Name:  "EvalGraphBuilder",
-	}).Build(path)
+	}).Build(ctx, path)
 }
 
 // See GraphBuilder
@@ -67,8 +73,8 @@ func (b *EvalGraphBuilder) Steps() []GraphTransformer {
 		},
 
 		// Add dynamic values
-		&RootVariableTransformer{Config: b.Config, RawValues: b.RootVariableValues, Planning: true},
-		&ModuleVariableTransformer{Config: b.Config, Planning: true},
+		&RootVariableTransformer{Config: b.Config, RawValues: b.RootVariableValues},
+		&ModuleVariableTransformer{Config: b.Config},
 		&LocalTransformer{Config: b.Config},
 		&OutputTransformer{
 			Config:   b.Config,
@@ -87,6 +93,12 @@ func (b *EvalGraphBuilder) Steps() []GraphTransformer {
 		// analyze the configuration to find references.
 		&AttachSchemaTransformer{Plugins: b.Plugins, Config: b.Config},
 
+		// After schema transformer, we can add function references
+		&ProviderFunctionTransformer{Config: b.Config, ProviderFunctionTracker: b.ProviderFunctionTracker},
+
+		// Remove unused providers and proxies
+		&PruneProviderTransformer{},
+
 		// Create expansion nodes for all of the module calls. This must
 		// come after all other transformers that create nodes representing
 		// objects that can belong to modules.
@@ -101,7 +113,9 @@ func (b *EvalGraphBuilder) Steps() []GraphTransformer {
 		&CloseProviderTransformer{},
 
 		// Close root module
-		&CloseRootModuleTransformer{},
+		&CloseRootModuleTransformer{
+			RootConfig: b.Config,
+		},
 
 		// Remove redundant edges to simplify the graph.
 		&TransitiveReductionTransformer{},

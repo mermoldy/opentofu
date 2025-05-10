@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
@@ -17,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	plugin "github.com/hashicorp/go-plugin"
+	"github.com/hashicorp/go-plugin"
 	"github.com/hashicorp/terraform-svchost/disco"
 	"github.com/mitchellh/cli"
 	"github.com/mitchellh/colorstring"
@@ -32,6 +34,7 @@ import (
 	"github.com/opentofu/opentofu/internal/command/workdir"
 	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/configs/configload"
+	"github.com/opentofu/opentofu/internal/getmodules"
 	"github.com/opentofu/opentofu/internal/getproviders"
 	legacy "github.com/opentofu/opentofu/internal/legacy/tofu"
 	"github.com/opentofu/opentofu/internal/providers"
@@ -127,6 +130,15 @@ type Meta struct {
 	// provider version can be obtained.
 	ProviderSource getproviders.Source
 
+	// ModulePackageFetcher is the client to use when fetching module packages
+	// from remote locations. This object effectively represents the policy
+	// for how to fetch remote module packages, which is decided by the caller.
+	//
+	// Leaving this nil means that only local modules (using relative paths
+	// in the source address) are supported, which is only reasonable for
+	// unit testing.
+	ModulePackageFetcher *getmodules.PackageFetcher
+
 	// BrowserLauncher is used by commands that need to open a URL in a
 	// web browser.
 	BrowserLauncher webbrowser.Launcher
@@ -211,6 +223,10 @@ type Meta struct {
 	targets     []addrs.Targetable
 	targetFlags []string
 
+	// Excludes for this context (private)
+	excludes     []addrs.Targetable
+	excludeFlags []string
+
 	// Internal fields
 	color bool
 	oldUi cli.Ui
@@ -250,20 +266,35 @@ type Meta struct {
 	//
 	// compactWarnings (-compact-warnings) selects a more compact presentation
 	// of warnings in the output when they are not accompanied by errors.
-	statePath        string
-	stateOutPath     string
-	backupPath       string
-	parallelism      int
-	stateLock        bool
-	stateLockTimeout time.Duration
-	forceInitCopy    bool
-	reconfigure      bool
-	migrateState     bool
-	compactWarnings  bool
+	//
+	// consolidateWarnings (-consolidate-warnings=false) disables consolidation
+	// of warnings in the output, printing all instances of a particular warning.
+	//
+	// consolidateErrors (-consolidate-errors=true) enables consolidation
+	// of errors in the output, printing a single instances of a particular warning.
+	statePath           string
+	stateOutPath        string
+	backupPath          string
+	parallelism         int
+	stateLock           bool
+	stateLockTimeout    time.Duration
+	forceInitCopy       bool
+	reconfigure         bool
+	migrateState        bool
+	compactWarnings     bool
+	consolidateWarnings bool
+	consolidateErrors   bool
 
 	// Used with commands which write state to allow users to write remote
 	// state even if the remote and local OpenTofu versions don't match.
 	ignoreRemoteVersion bool
+
+	outputInJSON bool
+
+	// Used to cache the root module rootModuleCallCache and known variables.
+	// This helps prevent duplicate errors/warnings.
+	rootModuleCallCache *configs.StaticModuleCall
+	inputVariableCache  map[string]backend.UnparsedVariableValue
 }
 
 type testingOverrides struct {
@@ -467,7 +498,7 @@ func (m *Meta) CommandContext() context.Context {
 // If the operation runs to completion then no error is returned even if the
 // operation itself is unsuccessful. Use the "Result" field of the
 // returned operation object to recognize operation-level failure.
-func (m *Meta) RunOperation(b backend.Enhanced, opReq *backend.Operation) (*backend.RunningOperation, error) {
+func (m *Meta) RunOperation(ctx context.Context, b backend.Enhanced, opReq *backend.Operation) (*backend.RunningOperation, tfdiags.Diagnostics) {
 	if opReq.View == nil {
 		panic("RunOperation called with nil View")
 	}
@@ -475,9 +506,18 @@ func (m *Meta) RunOperation(b backend.Enhanced, opReq *backend.Operation) (*back
 		opReq.ConfigDir = m.normalizePath(opReq.ConfigDir)
 	}
 
-	op, err := b.Operation(context.Background(), opReq)
+	// Inject variables and root module call
+	var diags, callDiags tfdiags.Diagnostics
+	opReq.Variables, diags = m.collectVariableValues()
+	opReq.RootCall, callDiags = m.rootModuleCall(ctx, opReq.ConfigDir)
+	diags = diags.Append(callDiags)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	op, err := b.Operation(ctx, opReq)
 	if err != nil {
-		return nil, fmt.Errorf("error starting operation: %w", err)
+		return nil, diags.Append(fmt.Errorf("error starting operation: %w", err))
 	}
 
 	// Wait for the operation to complete or an interrupt to occur
@@ -504,7 +544,7 @@ func (m *Meta) RunOperation(b backend.Enhanced, opReq *backend.Operation) (*back
 			case <-time.After(5 * time.Second):
 			}
 
-			return nil, errors.New("operation canceled")
+			return nil, diags.Append(errors.New("operation canceled"))
 
 		case <-op.Done():
 			// operation completed after Stop
@@ -513,13 +553,13 @@ func (m *Meta) RunOperation(b backend.Enhanced, opReq *backend.Operation) (*back
 		// operation completed normally
 	}
 
-	return op, nil
+	return op, diags
 }
 
 // contextOpts returns the options to use to initialize a OpenTofu
 // context with the settings from this Meta.
-func (m *Meta) contextOpts() (*tofu.ContextOpts, error) {
-	workspace, err := m.Workspace()
+func (m *Meta) contextOpts(ctx context.Context) (*tofu.ContextOpts, error) {
+	workspace, err := m.Workspace(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -568,9 +608,21 @@ func (m *Meta) defaultFlagSet(n string) *flag.FlagSet {
 func (m *Meta) ignoreRemoteVersionFlagSet(n string) *flag.FlagSet {
 	f := m.defaultFlagSet(n)
 
+	m.varFlagSet(f)
+
 	f.BoolVar(&m.ignoreRemoteVersion, "ignore-remote-version", false, "continue even if remote and local OpenTofu versions are incompatible")
 
 	return f
+}
+
+func (m *Meta) varFlagSet(f *flag.FlagSet) {
+	if m.variableArgs.items == nil {
+		m.variableArgs = newRawFlags("-var")
+	}
+	varValues := m.variableArgs.Alias("-var")
+	varFiles := m.variableArgs.Alias("-var-file")
+	f.Var(varValues, "var", "variables")
+	f.Var(varFiles, "var-file", "variable file")
 }
 
 // extendedFlagSet adds custom flags that are mostly used by commands
@@ -580,15 +632,12 @@ func (m *Meta) extendedFlagSet(n string) *flag.FlagSet {
 
 	f.BoolVar(&m.input, "input", true, "input")
 	f.Var((*FlagStringSlice)(&m.targetFlags), "target", "resource to target")
+	f.Var((*FlagStringSlice)(&m.excludeFlags), "exclude", "resource to exclude")
 	f.BoolVar(&m.compactWarnings, "compact-warnings", false, "use compact warnings")
+	f.BoolVar(&m.consolidateWarnings, "consolidate-warnings", true, "consolidate warnings")
+	f.BoolVar(&m.consolidateErrors, "consolidate-errors", false, "consolidate errors")
 
-	if m.variableArgs.items == nil {
-		m.variableArgs = newRawFlags("-var")
-	}
-	varValues := m.variableArgs.Alias("-var")
-	varFiles := m.variableArgs.Alias("-var-file")
-	f.Var(varValues, "var", "variables")
-	f.Var(varFiles, "var-file", "variable file")
+	m.varFlagSet(f)
 
 	// commands that bypass locking will supply their own flag on this var,
 	// but set the initial meta value to true as a failsafe.
@@ -637,8 +686,10 @@ func (m *Meta) process(args []string) []string {
 	// views.View and cli.Ui during the migration phase.
 	if m.View != nil {
 		m.View.Configure(&arguments.View{
-			CompactWarnings: m.compactWarnings,
-			NoColor:         !m.Color,
+			CompactWarnings:     m.compactWarnings,
+			ConsolidateWarnings: m.consolidateWarnings,
+			ConsolidateErrors:   m.consolidateErrors,
+			NoColor:             !m.Color,
 		})
 	}
 
@@ -683,6 +734,7 @@ func (m *Meta) confirm(opts *tofu.InputOpts) (bool, error) {
 // Internally this function uses Diagnostics.Append, and so it will panic
 // if given unsupported value types, just as Append does.
 func (m *Meta) showDiagnostics(vals ...interface{}) {
+
 	var diags tfdiags.Diagnostics
 	diags = diags.Append(vals...)
 	diags.Sort()
@@ -691,9 +743,20 @@ func (m *Meta) showDiagnostics(vals ...interface{}) {
 		return
 	}
 
+	if m.outputInJSON {
+		jsonView := views.NewJSONView(m.View)
+		jsonView.Diagnostics(diags)
+		return
+	}
+
 	outputWidth := m.ErrorColumns()
 
-	diags = diags.ConsolidateWarnings(1)
+	if m.consolidateWarnings {
+		diags = diags.Consolidate(1, tfdiags.Warning)
+	}
+	if m.consolidateErrors {
+		diags = diags.Consolidate(1, tfdiags.Error)
+	}
 
 	// Since warning messages are generally competing
 	if m.compactWarnings {
@@ -748,8 +811,8 @@ var errInvalidWorkspaceNameEnvVar = fmt.Errorf("Invalid workspace name set using
 
 // Workspace returns the name of the currently configured workspace, corresponding
 // to the desired named state.
-func (m *Meta) Workspace() (string, error) {
-	current, overridden := m.WorkspaceOverridden()
+func (m *Meta) Workspace(ctx context.Context) (string, error) {
+	current, overridden := m.WorkspaceOverridden(ctx)
 	if overridden && !validWorkspaceName(current) {
 		return "", errInvalidWorkspaceNameEnvVar
 	}
@@ -759,7 +822,7 @@ func (m *Meta) Workspace() (string, error) {
 // WorkspaceOverridden returns the name of the currently configured workspace,
 // corresponding to the desired named state, as well as a bool saying whether
 // this was set via the TF_WORKSPACE environment variable.
-func (m *Meta) WorkspaceOverridden() (string, bool) {
+func (m *Meta) WorkspaceOverridden(_ context.Context) (string, bool) {
 	if envVar := os.Getenv(WorkspaceNameEnvVar); envVar != "" {
 		return envVar, true
 	}
@@ -812,7 +875,7 @@ func (m *Meta) applyStateArguments(args *arguments.State) {
 
 // checkRequiredVersion loads the config and check if the
 // core version requirements are satisfied.
-func (m *Meta) checkRequiredVersion() tfdiags.Diagnostics {
+func (m *Meta) checkRequiredVersion(ctx context.Context) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	loader, err := m.initConfigLoader()
@@ -827,7 +890,13 @@ func (m *Meta) checkRequiredVersion() tfdiags.Diagnostics {
 		return diags
 	}
 
-	config, configDiags := loader.LoadConfig(pwd)
+	call, callDiags := m.rootModuleCall(ctx, pwd)
+	if callDiags.HasErrors() {
+		diags = diags.Append(callDiags)
+		return diags
+	}
+
+	config, configDiags := loader.LoadConfig(ctx, pwd, call)
 	if configDiags.HasErrors() {
 		diags = diags.Append(configDiags)
 		return diags
@@ -847,7 +916,7 @@ func (m *Meta) checkRequiredVersion() tfdiags.Diagnostics {
 // it could potentially return nil without errors. It is the
 // responsibility of the caller to handle the lack of schema
 // information accordingly
-func (c *Meta) MaybeGetSchemas(state *states.State, config *configs.Config) (*tofu.Schemas, tfdiags.Diagnostics) {
+func (c *Meta) MaybeGetSchemas(ctx context.Context, state *states.State, config *configs.Config) (*tofu.Schemas, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
 	path, err := os.Getwd()
@@ -857,7 +926,7 @@ func (c *Meta) MaybeGetSchemas(state *states.State, config *configs.Config) (*to
 	}
 
 	if config == nil {
-		config, diags = c.loadConfig(path)
+		config, diags = c.loadConfig(ctx, path)
 		if diags.HasErrors() {
 			diags.Append(tfdiags.SimpleWarning(failedToLoadSchemasMessage))
 			return nil, diags
@@ -865,7 +934,7 @@ func (c *Meta) MaybeGetSchemas(state *states.State, config *configs.Config) (*to
 	}
 
 	if config != nil || state != nil {
-		opts, err := c.contextOpts()
+		opts, err := c.contextOpts(ctx)
 		if err != nil {
 			diags = diags.Append(err)
 			return nil, diags
@@ -876,7 +945,7 @@ func (c *Meta) MaybeGetSchemas(state *states.State, config *configs.Config) (*to
 			return nil, diags
 		}
 		var schemaDiags tfdiags.Diagnostics
-		schemas, schemaDiags := tfCtx.Schemas(config, state)
+		schemas, schemaDiags := tfCtx.Schemas(ctx, config, state)
 		diags = diags.Append(schemaDiags)
 		if schemaDiags.HasErrors() {
 			return nil, diags

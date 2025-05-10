@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
@@ -16,14 +18,14 @@ func TestModuleVariableTransformer(t *testing.T) {
 
 	{
 		tf := &RootVariableTransformer{Config: module}
-		if err := tf.Transform(&g); err != nil {
+		if err := tf.Transform(t.Context(), &g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
 	}
 
 	{
 		tf := &ModuleVariableTransformer{Config: module}
-		if err := tf.Transform(&g); err != nil {
+		if err := tf.Transform(t.Context(), &g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
 	}
@@ -41,14 +43,14 @@ func TestModuleVariableTransformer_nested(t *testing.T) {
 
 	{
 		tf := &RootVariableTransformer{Config: module}
-		if err := tf.Transform(&g); err != nil {
+		if err := tf.Transform(t.Context(), &g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
 	}
 
 	{
 		tf := &ModuleVariableTransformer{Config: module}
-		if err := tf.Transform(&g); err != nil {
+		if err := tf.Transform(t.Context(), &g); err != nil {
 			t.Fatalf("err: %s", err)
 		}
 	}
@@ -61,10 +63,16 @@ func TestModuleVariableTransformer_nested(t *testing.T) {
 }
 
 const testTransformModuleVarBasicStr = `
-module.child.var.value (expand)
+module.child.var.value (expand, input)
+module.child.var.value (expand, reference)
+  module.child.var.value (expand, input)
 `
 
 const testTransformModuleVarNestedStr = `
-module.child.module.child.var.value (expand)
-module.child.var.value (expand)
+module.child.module.child.var.value (expand, input)
+module.child.module.child.var.value (expand, reference)
+  module.child.module.child.var.value (expand, input)
+module.child.var.value (expand, input)
+module.child.var.value (expand, reference)
+  module.child.var.value (expand, input)
 `

@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package ssh
@@ -20,14 +22,7 @@ import (
 func TestFindKeyData(t *testing.T) {
 	// set up a test directory
 	td := t.TempDir()
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(td); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(cwd)
+	t.Chdir(td)
 
 	id := "provisioner_id"
 

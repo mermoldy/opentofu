@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package remoteexec
@@ -243,7 +245,9 @@ func runScripts(ctx context.Context, o provisioners.UIOutput, comm communicator.
 	// Wait for the context to end and then disconnect
 	go func() {
 		<-ctx.Done()
-		comm.Disconnect()
+		if err := comm.Disconnect(); err != nil {
+			log.Printf("[ERROR] Unable to close provisioner connection: %s", err.Error())
+		}
 	}()
 
 	for _, script := range scripts {

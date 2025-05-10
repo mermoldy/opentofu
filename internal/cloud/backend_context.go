@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package cloud
@@ -12,21 +14,26 @@ import (
 
 	tfe "github.com/hashicorp/go-tfe"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
+
 	"github.com/opentofu/opentofu/internal/backend"
 	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/states/statemgr"
 	"github.com/opentofu/opentofu/internal/tfdiags"
 	"github.com/opentofu/opentofu/internal/tofu"
-	"github.com/zclconf/go-cty/cty"
 )
 
+// Ensure that Cloud implements the backend.Local interface.
+var _ backend.Local = (*Cloud)(nil)
+
 // LocalRun implements backend.Local
-func (b *Cloud) LocalRun(op *backend.Operation) (*backend.LocalRun, statemgr.Full, tfdiags.Diagnostics) {
+func (b *Cloud) LocalRun(ctx context.Context, op *backend.Operation) (*backend.LocalRun, statemgr.Full, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	ret := &backend.LocalRun{
 		PlanOpts: &tofu.PlanOpts{
-			Mode:    op.PlanMode,
-			Targets: op.Targets,
+			Mode:     op.PlanMode,
+			Targets:  op.Targets,
+			Excludes: op.Excludes,
 		},
 	}
 
@@ -37,7 +44,7 @@ func (b *Cloud) LocalRun(op *backend.Operation) (*backend.LocalRun, statemgr.Ful
 
 	// Get the latest state.
 	log.Printf("[TRACE] cloud: requesting state manager for workspace %q", remoteWorkspaceName)
-	stateMgr, err := b.StateMgr(op.Workspace)
+	stateMgr, err := b.StateMgr(ctx, op.Workspace)
 	if err != nil {
 		diags = diags.Append(fmt.Errorf("error loading state: %w", err))
 		return nil, nil, diags
@@ -70,6 +77,7 @@ func (b *Cloud) LocalRun(op *backend.Operation) (*backend.LocalRun, statemgr.Ful
 
 	// Copy set options from the operation
 	opts.UIInput = op.UIIn
+	opts.Encryption = op.Encryption
 
 	// Load the latest state. If we enter contextFromPlanFile below then the
 	// state snapshot in the plan file must match this, or else it'll return
@@ -78,7 +86,7 @@ func (b *Cloud) LocalRun(op *backend.Operation) (*backend.LocalRun, statemgr.Ful
 	ret.InputState = stateMgr.State()
 
 	log.Printf("[TRACE] cloud: loading configuration for the current working directory")
-	config, configDiags := op.ConfigLoader.LoadConfig(op.ConfigDir)
+	config, configDiags := op.ConfigLoader.LoadConfig(ctx, op.ConfigDir, op.RootCall)
 	diags = diags.Append(configDiags)
 	if configDiags.HasErrors() {
 		return nil, nil, diags
@@ -288,7 +296,7 @@ func (v *remoteStoredVariableValue) ParseVariableValue(mode configs.VariablePars
 		// We mark these as "from input" with the rationale that entering
 		// variable values into the Terraform Cloud or Enterprise UI is,
 		// roughly speaking, a similar idea to entering variable values at
-		// the interactive CLI prompts. It's not a perfect correspondance,
+		// the interactive CLI prompts. It's not a perfect correspondence,
 		// but it's closer than the other options.
 		SourceType: tofu.ValueFromInput,
 	}, diags

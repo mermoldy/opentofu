@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package cliconfig
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/google/go-cmp/cmp"
+
 	"github.com/opentofu/opentofu/internal/tfdiags"
 )
 
@@ -36,8 +40,7 @@ func TestLoadConfig(t *testing.T) {
 }
 
 func TestLoadConfig_envSubst(t *testing.T) {
-	defer os.Unsetenv("TFTEST")
-	os.Setenv("TFTEST", "hello")
+	t.Setenv("TFTEST", "hello")
 
 	c, err := loadConfigFile(filepath.Join(fixtureDir, "config-env"))
 	if err != nil {
@@ -63,10 +66,9 @@ func TestLoadConfig_non_existing_file(t *testing.T) {
 	tmpDir := os.TempDir()
 	cliTmpFile := filepath.Join(tmpDir, "dev.tfrc")
 
-	os.Setenv("TF_CLI_CONFIG_FILE", cliTmpFile)
-	defer os.Unsetenv("TF_CLI_CONFIG_FILE")
+	t.Setenv("TF_CLI_CONFIG_FILE", cliTmpFile)
 
-	c, errs := LoadConfig()
+	c, errs := LoadConfig(context.Background())
 	if errs.HasErrors() || c.Validate().HasErrors() {
 		t.Fatalf("err: %s", errs)
 	}
@@ -416,6 +418,17 @@ func TestConfig_Merge(t *testing.T) {
 				},
 			},
 		},
+		OCIDefaultCredentials: []*OCIDefaultCredentials{
+			{
+				DiscoverAmbientCredentials: false,
+			},
+		},
+		OCIRepositoryCredentials: []*OCIRepositoryCredentials{
+			{
+				RepositoryPrefix:       "example.com",
+				DockerCredentialHelper: "osxkeychain",
+			},
+		},
 	}
 
 	c2 := &Config{
@@ -449,6 +462,17 @@ func TestConfig_Merge(t *testing.T) {
 			},
 		},
 		PluginCacheMayBreakDependencyLockFile: true,
+		OCIDefaultCredentials: []*OCIDefaultCredentials{
+			{
+				DefaultDockerCredentialHelper: "osxkeychain",
+			},
+		},
+		OCIRepositoryCredentials: []*OCIRepositoryCredentials{
+			{
+				RepositoryPrefix:       "example.net",
+				DockerCredentialHelper: "osxkeychain",
+			},
+		},
 	}
 
 	expected := &Config{
@@ -504,6 +528,24 @@ func TestConfig_Merge(t *testing.T) {
 			},
 		},
 		PluginCacheMayBreakDependencyLockFile: true,
+		OCIDefaultCredentials: []*OCIDefaultCredentials{
+			{
+				DiscoverAmbientCredentials: false,
+			},
+			{
+				DefaultDockerCredentialHelper: "osxkeychain",
+			},
+		},
+		OCIRepositoryCredentials: []*OCIRepositoryCredentials{
+			{
+				RepositoryPrefix:       "example.com",
+				DockerCredentialHelper: "osxkeychain",
+			},
+			{
+				RepositoryPrefix:       "example.net",
+				DockerCredentialHelper: "osxkeychain",
+			},
+		},
 	}
 
 	actual := c1.Merge(c2)

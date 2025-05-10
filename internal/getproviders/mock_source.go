@@ -108,7 +108,7 @@ func (s *MockSource) PackageMeta(ctx context.Context, provider addrs.Provider, v
 	}
 }
 
-// CallLog returns a list of calls to other methods of the receiever that have
+// CallLog returns a list of calls to other methods of the receiver that have
 // been called since it was created, in case a calling test wishes to verify
 // a particular sequence of operations.
 //
@@ -152,7 +152,7 @@ func FakePackageMeta(provider addrs.Provider, version Version, protocols Version
 // should call the callback even if this function returns an error, because
 // some error conditions leave a partially-created file on disk.
 func FakeInstallablePackageMeta(provider addrs.Provider, version Version, protocols VersionList, target Platform, execFilename string) (PackageMeta, func(), error) {
-	f, err := os.CreateTemp("", "terraform-getproviders-fake-package-")
+	f, err := os.CreateTemp("", "tofu-getproviders-fake-package-")
 	if err != nil {
 		return PackageMeta{}, func() {}, err
 	}
@@ -185,9 +185,13 @@ func FakeInstallablePackageMeta(provider addrs.Provider, version Version, protoc
 
 	// Compute the SHA256 checksum of the generated file, to allow package
 	// authentication code to be exercised.
-	f.Seek(0, io.SeekStart)
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return PackageMeta{}, close, err
+	}
 	h := sha256.New()
-	io.Copy(h, f)
+	if _, err := io.Copy(h, f); err != nil {
+		return PackageMeta{}, close, err
+	}
 	checksum := [32]byte{}
 	h.Sum(checksum[:0])
 

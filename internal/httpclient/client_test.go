@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package httpclient
@@ -8,12 +10,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"testing"
 
 	"github.com/opentofu/opentofu/version"
 )
 
 func TestNew_userAgent(t *testing.T) {
+
+	appendUaVal := os.Getenv(appendUaEnvVar)
+	os.Unsetenv(appendUaEnvVar)
+	defer os.Setenv(appendUaEnvVar, appendUaVal)
+
 	var actualUserAgent string
 	ts := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		actualUserAgent = req.UserAgent()
@@ -67,7 +75,7 @@ func TestNew_userAgent(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%d %s", i, c.expected), func(t *testing.T) {
 			actualUserAgent = ""
-			cli := New()
+			cli := New(t.Context())
 			err := c.request(cli)
 			if err != nil {
 				t.Fatal(err)

@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package remote
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	tfe "github.com/hashicorp/go-tfe"
+
 	"github.com/opentofu/opentofu/internal/backend"
 	"github.com/opentofu/opentofu/internal/logging"
 	"github.com/opentofu/opentofu/internal/plans"
@@ -71,7 +74,7 @@ func (b *Remote) waitForRun(stopCtx, cancelCtx context.Context, op *backend.Oper
 				b.CLI.Output(b.Colorize().Color(fmt.Sprintf("Waiting for the %s to start...\n", opType)))
 			}
 			if i > 0 && b.CLI != nil {
-				// Insert a blank line to separate the ouputs.
+				// Insert a blank line to separate the outputs.
 				b.CLI.Output("")
 			}
 			return r, nil
@@ -219,9 +222,9 @@ func (b *Remote) waitForRun(stopCtx, cancelCtx context.Context, op *backend.Oper
 // individual variable values are invalid. That's okay because we only use this
 // result to hint the user to set variables a different way. It's always the
 // remote system's responsibility to do final validation of the input.
-func (b *Remote) hasExplicitVariableValues(op *backend.Operation) bool {
+func (b *Remote) hasExplicitVariableValues(ctx context.Context, op *backend.Operation) bool {
 	// Load the configuration using the caller-provided configuration loader.
-	config, _, configDiags := op.ConfigLoader.LoadConfigWithSnapshot(op.ConfigDir)
+	config, _, configDiags := op.ConfigLoader.LoadConfigWithSnapshot(ctx, op.ConfigDir, op.RootCall)
 	if configDiags.HasErrors() {
 		// If we can't load the configuration then we'll assume no explicit
 		// variable values just to let the remote operation start and let
@@ -230,7 +233,7 @@ func (b *Remote) hasExplicitVariableValues(op *backend.Operation) bool {
 	}
 
 	// We're intentionally ignoring the diagnostics here because validation
-	// of the variable values is the responsibilty of the remote system. Our
+	// of the variable values is the responsibility of the remote system. Our
 	// goal here is just to make a best effort count of how many variable
 	// values are coming from -var or -var-file CLI arguments so that we can
 	// hint the user that those are not supported for remote operations.
@@ -338,7 +341,7 @@ func (b *Remote) costEstimate(stopCtx, cancelCtx context.Context, op *backend.Op
 			b.CLI.Output("\n------------------------------------------------------------------------")
 			return nil
 		case tfe.CostEstimateCanceled:
-			return fmt.Errorf(msgPrefix + " canceled.")
+			return fmt.Errorf("%s canceled.", msgPrefix)
 		default:
 			return fmt.Errorf("Unknown or unexpected cost estimate state: %s", ce.Status)
 		}
@@ -415,15 +418,15 @@ func (b *Remote) checkPolicy(stopCtx, cancelCtx context.Context, op *backend.Ope
 			}
 			continue
 		case tfe.PolicyErrored:
-			return fmt.Errorf(msgPrefix + " errored.")
+			return fmt.Errorf("%s errored.", msgPrefix)
 		case tfe.PolicyHardFailed:
-			return fmt.Errorf(msgPrefix + " hard failed.")
+			return fmt.Errorf("%s hard failed.", msgPrefix)
 		case tfe.PolicySoftFailed:
 			runUrl := fmt.Sprintf(runHeader, b.hostname, b.organization, op.Workspace, r.ID)
 
 			if op.Type == backend.OperationTypePlan || op.UIOut == nil || op.UIIn == nil ||
 				!pc.Actions.IsOverridable || !pc.Permissions.CanOverride {
-				return fmt.Errorf(msgPrefix + " soft failed.\n" + runUrl)
+				return fmt.Errorf("%s soft failed.\n%s", msgPrefix, runUrl)
 			}
 
 			if op.AutoApprove {
@@ -465,8 +468,10 @@ func (b *Remote) confirm(stopCtx context.Context, op *backend.Operation, opts *t
 	doneCtx, cancel := context.WithCancel(stopCtx)
 	result := make(chan error, 2)
 
+	panicHandler := logging.PanicHandlerWithTraceFn()
+
 	go func() {
-		defer logging.PanicHandler()
+		defer panicHandler()
 
 		// Make sure we cancel doneCtx before we return
 		// so the input command is also canceled.

@@ -1,3 +1,8 @@
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package tofu
 
 import (
@@ -60,7 +65,7 @@ run "test_case" {
 					addrs.AbsProviderConfig{
 						Module:   addrs.RootModule,
 						Provider: addrs.NewDefaultProvider("test"),
-					})
+					}, addrs.NoKey)
 			}),
 			provider: &MockProvider{
 				GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -118,7 +123,7 @@ run "test_case" {
 					addrs.AbsProviderConfig{
 						Module:   addrs.RootModule,
 						Provider: addrs.NewDefaultProvider("test"),
-					})
+					}, addrs.NoKey)
 			}),
 			provider: &MockProvider{
 				GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -137,6 +142,41 @@ run "test_case" {
 				},
 			},
 			expectedStatus: moduletest.Pass,
+		},
+		"module_call_with_deprecated_output": {
+			configs: map[string]string{
+				"./mod/main.tf": `
+output "a" {
+  value      = "a"
+  deprecated = "Don't use me"
+}
+				`,
+				"main.tf": `
+module "mod" {
+  source = "./mod"
+}
+`,
+				"main.tftest.hcl": `
+run "test_case" {
+	assert {
+		condition = module.mod.a == "a"
+		error_message = "invalid value"
+	}
+}
+`,
+			},
+			state: states.BuildState(func(state *states.SyncState) {
+				outputAddr, _ := addrs.ParseAbsOutputValueStr("module.mod.output.a")
+				state.SetOutputValue(outputAddr, cty.StringVal("a"), false, "Don't use me")
+			}),
+			provider:       &MockProvider{},
+			expectedStatus: moduletest.Pass,
+			expectedDiags: []tfdiags.Description{
+				{
+					Summary: "Value derived from a deprecated source",
+					Detail:  "This value is derived from module.mod.a, which is deprecated with the following message:\n\nDon't use me",
+				},
+			},
 		},
 		"with_variables": {
 			configs: map[string]string{
@@ -178,7 +218,7 @@ run "test_case" {
 					addrs.AbsProviderConfig{
 						Module:   addrs.RootModule,
 						Provider: addrs.NewDefaultProvider("test"),
-					})
+					}, addrs.NoKey)
 			}),
 			variables: InputValues{
 				"value": {
@@ -235,7 +275,7 @@ run "test_case" {
 					addrs.AbsProviderConfig{
 						Module:   addrs.RootModule,
 						Provider: addrs.NewDefaultProvider("test"),
-					})
+					}, addrs.NoKey)
 			}),
 			provider: &MockProvider{
 				GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -298,7 +338,7 @@ run "test_case" {
 					addrs.AbsProviderConfig{
 						Module:   addrs.RootModule,
 						Provider: addrs.NewDefaultProvider("test"),
-					})
+					}, addrs.NoKey)
 			}),
 			provider: &MockProvider{
 				GetProviderSchemaResponse: &providers.GetProviderSchemaResponse{
@@ -398,7 +438,7 @@ run "test_case" {
 					addrs.AbsProviderConfig{
 						Module:   addrs.RootModule,
 						Provider: addrs.NewDefaultProvider("test"),
-					})
+					}, addrs.NoKey)
 			}),
 			plan: &plans.Plan{
 				Changes: &plans.Changes{
@@ -474,7 +514,7 @@ run "test_case" {
 					addrs.AbsProviderConfig{
 						Module:   addrs.RootModule,
 						Provider: addrs.NewDefaultProvider("test"),
-					})
+					}, addrs.NoKey)
 			}),
 			plan: &plans.Plan{
 				Changes: &plans.Changes{

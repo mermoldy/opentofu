@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package main
@@ -19,6 +21,7 @@ import (
 	"github.com/opentofu/opentofu/internal/command/cliconfig"
 	"github.com/opentofu/opentofu/internal/command/views"
 	"github.com/opentofu/opentofu/internal/command/webbrowser"
+	"github.com/opentofu/opentofu/internal/getmodules"
 	"github.com/opentofu/opentofu/internal/getproviders"
 	pluginDiscovery "github.com/opentofu/opentofu/internal/plugin/discovery"
 	"github.com/opentofu/opentofu/internal/terminal"
@@ -29,25 +32,25 @@ import (
 // that assume that OpenTofu is being run from a command prompt.
 const runningInAutomationEnvName = "TF_IN_AUTOMATION"
 
-// Commands is the mapping of all the available OpenTofu commands.
-var Commands map[string]cli.CommandFactory
+// commands is the mapping of all the available OpenTofu commands.
+var commands map[string]cli.CommandFactory
 
-// PrimaryCommands is an ordered sequence of the top-level commands (not
+// primaryCommands is an ordered sequence of the top-level commands (not
 // subcommands) that we emphasize at the top of our help output. This is
 // ordered so that we can show them in the typical workflow order, rather
 // than in alphabetical order. Anything not in this sequence or in the
 // HiddenCommands set appears under "all other commands".
-var PrimaryCommands []string
+var primaryCommands []string
 
-// HiddenCommands is a set of top-level commands (not subcommands) that are
+// hiddenCommands is a set of top-level commands (not subcommands) that are
 // not advertised in the top-level help at all. This is typically because
 // they are either just stubs that return an error message about something
 // no longer being supported or backward-compatibility aliases for other
 // commands.
 //
 // No commands in the PrimaryCommands sequence should also appear in the
-// HiddenCommands set, because that would be rather silly.
-var HiddenCommands map[string]struct{}
+// hiddenCommands set, because that would be rather silly.
+var hiddenCommands map[string]struct{}
 
 // Ui is the cli.Ui used for communicating to the outside world.
 var Ui cli.Ui
@@ -58,6 +61,7 @@ func initCommands(
 	streams *terminal.Streams,
 	config *cliconfig.Config,
 	services *disco.Disco,
+	modulePkgFetcher *getmodules.PackageFetcher,
 	providerSrc getproviders.Source,
 	providerDevOverrides map[addrs.Provider]getproviders.PackageLocalDir,
 	unmanagedProviders map[addrs.Provider]*plugin.ReattachConfig,
@@ -82,7 +86,7 @@ func initCommands(
 		configDir = "" // No config dir available (e.g. looking up a home directory failed)
 	}
 
-	wd := WorkingDir(originalWorkingDir, os.Getenv("TF_DATA_DIR"))
+	wd := workingDir(originalWorkingDir, os.Getenv("TF_DATA_DIR"))
 
 	meta := command.Meta{
 		WorkingDir: wd,
@@ -105,11 +109,12 @@ func initCommands(
 		ShutdownCh:    makeShutdownCh(),
 		CallerContext: ctx,
 
+		ModulePackageFetcher: modulePkgFetcher,
 		ProviderSource:       providerSrc,
 		ProviderDevOverrides: providerDevOverrides,
 		UnmanagedProviders:   unmanagedProviders,
 
-		AllowExperimentalFeatures: ExperimentsAllowed(),
+		AllowExperimentalFeatures: experimentsAreAllowed(),
 	}
 
 	// The command list is included in the tofu -help
@@ -118,7 +123,7 @@ func initCommands(
 	// add, remove or reclassify commands then consider updating
 	// that to match.
 
-	Commands = map[string]cli.CommandFactory{
+	commands = map[string]cli.CommandFactory{
 		"apply": func() (cli.Command, error) {
 			return &command.ApplyCommand{
 				Meta: meta,
@@ -370,6 +375,14 @@ func initCommands(
 			}, nil
 		},
 
+		"state ls": func() (cli.Command, error) {
+			return &command.AliasCommand{
+				Command: &command.StateListCommand{
+					Meta: meta,
+				},
+			}, nil
+		},
+
 		"state rm": func() (cli.Command, error) {
 			return &command.StateRmCommand{
 				StateMeta: command.StateMeta{
@@ -378,10 +391,30 @@ func initCommands(
 			}, nil
 		},
 
+		"state remove": func() (cli.Command, error) {
+			return &command.AliasCommand{
+				Command: &command.StateRmCommand{
+					StateMeta: command.StateMeta{
+						Meta: meta,
+					},
+				},
+			}, nil
+		},
+
 		"state mv": func() (cli.Command, error) {
 			return &command.StateMvCommand{
 				StateMeta: command.StateMeta{
 					Meta: meta,
+				},
+			}, nil
+		},
+
+		"state move": func() (cli.Command, error) {
+			return &command.AliasCommand{
+				Command: &command.StateMvCommand{
+					StateMeta: command.StateMeta{
+						Meta: meta,
+					},
 				},
 			}, nil
 		},
@@ -413,15 +446,7 @@ func initCommands(
 		},
 	}
 
-	if meta.AllowExperimentalFeatures {
-		Commands["cloud"] = func() (cli.Command, error) {
-			return &command.CloudCommand{
-				Meta: meta,
-			}, nil
-		}
-	}
-
-	PrimaryCommands = []string{
+	primaryCommands = []string{
 		"init",
 		"validate",
 		"plan",
@@ -429,7 +454,7 @@ func initCommands(
 		"destroy",
 	}
 
-	HiddenCommands = map[string]struct{}{
+	hiddenCommands = map[string]struct{}{
 		"env":             {},
 		"internal-plugin": {},
 		"push":            {},
@@ -457,4 +482,16 @@ func makeShutdownCh() <-chan struct{} {
 func credentialsSource(config *cliconfig.Config) (auth.CredentialsSource, error) {
 	helperPlugins := pluginDiscovery.FindPlugins("credentials", globalPluginDirs())
 	return config.CredentialsSource(helperPlugins)
+}
+
+func getAliasCommandKeys() []string {
+	keys := []string{}
+	for key, cmdFact := range commands {
+		cmd, _ := cmdFact()
+		_, ok := cmd.(*command.AliasCommand)
+		if ok {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }

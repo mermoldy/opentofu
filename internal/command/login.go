@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
@@ -29,10 +31,15 @@ import (
 	"github.com/opentofu/opentofu/internal/logging"
 	"github.com/opentofu/opentofu/internal/tfdiags"
 	"github.com/opentofu/opentofu/internal/tofu"
+	"github.com/opentofu/opentofu/version"
 
 	uuid "github.com/hashicorp/go-uuid"
 	"golang.org/x/oauth2"
 )
+
+// This is HashiCorp's cloud host.
+// There are a few special circumstances that depend on this whitelisted hostname.
+const tfeHost = "app.terraform.io"
 
 // LoginCommand is a Command implementation that runs an interactive login
 // flow for a remote service host. It then stashes credentials in a tfrc
@@ -43,6 +50,8 @@ type LoginCommand struct {
 
 // Run implements cli.Command.
 func (c *LoginCommand) Run(args []string) int {
+	ctx := c.CommandContext()
+
 	args = c.Meta.process(args)
 	cmdFlags := c.Meta.extendedFlagSet("login")
 	cmdFlags.Usage = func() { c.Ui.Error(c.Help()) }
@@ -185,12 +194,12 @@ func (c *LoginCommand) Run(args []string) int {
 		switch {
 		case clientConfig.SupportedGrantTypes.Has(disco.OAuthAuthzCodeGrant):
 			// We prefer an OAuth code grant if the server supports it.
-			oauthToken, tokenDiags = c.interactiveGetTokenByCode(hostname, credsCtx, clientConfig)
-		case clientConfig.SupportedGrantTypes.Has(disco.OAuthOwnerPasswordGrant) && hostname == svchost.Hostname("app.terraform.io"):
+			oauthToken, tokenDiags = c.interactiveGetTokenByCode(ctx, hostname, credsCtx, clientConfig)
+		case clientConfig.SupportedGrantTypes.Has(disco.OAuthOwnerPasswordGrant) && hostname == svchost.Hostname(tfeHost):
 			// The password grant type is allowed only for Terraform Cloud SaaS.
 			// Note this case is purely theoretical at this point, as TFC currently uses
 			// its own bespoke login protocol (tfe)
-			oauthToken, tokenDiags = c.interactiveGetTokenByPassword(hostname, credsCtx, clientConfig)
+			oauthToken, tokenDiags = c.interactiveGetTokenByPassword(ctx, hostname, credsCtx, clientConfig)
 		default:
 			tokenDiags = tokenDiags.Append(tfdiags.Sourceless(
 				tfdiags.Error,
@@ -202,7 +211,7 @@ func (c *LoginCommand) Run(args []string) int {
 			token = svcauth.HostCredentialsToken(oauthToken.AccessToken)
 		}
 	} else if tfeservice != nil {
-		token, tokenDiags = c.interactiveGetTokenByUI(hostname, credsCtx, tfeservice)
+		token, tokenDiags = c.interactiveGetTokenByUI(ctx, hostname, credsCtx, tfeservice)
 	}
 
 	diags = diags.Append(tokenDiags)
@@ -226,7 +235,7 @@ func (c *LoginCommand) Run(args []string) int {
 	}
 
 	c.Ui.Output("\n---------------------------------------------------------------------------------\n")
-	if hostname == "app.terraform.io" { // Terraform Cloud
+	if hostname == tfeHost { // Terraform Cloud
 		var motd struct {
 			Message string        `json:"msg"`
 			Errors  []interface{} `json:"errors"`
@@ -253,7 +262,7 @@ func (c *LoginCommand) Run(args []string) int {
 
 		req.Header.Set("Authorization", "Bearer "+token.Token())
 
-		resp, err := httpclient.New().Do(req)
+		resp, err := httpclient.New(ctx).Do(req)
 		if err != nil {
 			c.logMOTDError(err)
 			c.outputDefaultTFCLoginSuccess()
@@ -314,12 +323,12 @@ func (c *LoginCommand) outputDefaultTFELoginSuccess(dispHostname string) {
 
 func (c *LoginCommand) outputDefaultTFCLoginSuccess() {
 	c.Ui.Output(c.Colorize().Color(strings.TrimSpace(`
-[green][bold]Success![reset] [bold]Logged in to Terraform Cloud[reset]
+[green][bold]Success![reset] [bold]Logged in to cloud backend[reset]
 ` + "\n")))
 }
 
 func (c *LoginCommand) logMOTDError(err error) {
-	log.Printf("[TRACE] login: An error occurred attempting to fetch a message of the day for Terraform Cloud: %s", err)
+	log.Printf("[TRACE] login: An error occurred attempting to fetch a message of the day for cloud backend: %s", err)
 }
 
 // Help implements cli.Command.
@@ -360,10 +369,9 @@ func (c *LoginCommand) defaultOutputFile() string {
 	return filepath.Join(c.CLIConfigDir, "credentials.tfrc.json")
 }
 
-func (c *LoginCommand) interactiveGetTokenByCode(hostname svchost.Hostname, credsCtx *loginCredentialsContext, clientConfig *disco.OAuthClient) (*oauth2.Token, tfdiags.Diagnostics) {
+func (c *LoginCommand) interactiveGetTokenByCode(ctx context.Context, hostname svchost.Hostname, credsCtx *loginCredentialsContext, clientConfig *disco.OAuthClient) (*oauth2.Token, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
-
-	confirm, confirmDiags := c.interactiveContextConsent(hostname, disco.OAuthAuthzCodeGrant, credsCtx)
+	confirm, confirmDiags := c.interactiveContextConsent(ctx, hostname, disco.OAuthAuthzCodeGrant, credsCtx)
 	diags = diags.Append(confirmDiags)
 	if !confirm {
 		diags = diags.Append(errors.New("Login cancelled"))
@@ -448,8 +456,9 @@ func (c *LoginCommand) interactiveGetTokenByCode(hostname svchost.Hostname, cred
 			resp.Write([]byte(callbackSuccessMessage))
 		}),
 	}
+	panicHandler := logging.PanicHandlerWithTraceFn()
 	go func() {
-		defer logging.PanicHandler()
+		defer panicHandler()
 		err := server.Serve(listener)
 		if err != nil && err != http.ErrServerClosed {
 			diags = diags.Append(tfdiags.Sourceless(
@@ -497,7 +506,22 @@ func (c *LoginCommand) interactiveGetTokenByCode(hostname svchost.Hostname, cred
 
 	c.Ui.Output("OpenTofu will now wait for the host to signal that login was successful.\n")
 
-	code, ok := <-codeCh
+	var code string
+	var ok bool
+	select {
+	case <-c.ShutdownCh:
+		diags = diags.Append(
+			tfdiags.Sourceless(
+				tfdiags.Error,
+				"Action aborted",
+				"Current command was aborted by the calling code.",
+			),
+		)
+		code, ok = "", true
+		close(codeCh)
+	case code, ok = <-codeCh:
+	}
+
 	if !ok {
 		// If we got no code at all then the server wasn't able to start
 		// up, so we'll just give up.
@@ -510,7 +534,13 @@ func (c *LoginCommand) interactiveGetTokenByCode(hostname svchost.Hostname, cred
 		log.Printf("[WARN] login: callback server can't shut down: %s", err)
 	}
 
-	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, httpclient.New())
+	if code == "" {
+		// empty code is not possible in happy path as it is validated in the HTTP handler of our callback server
+		// so it means, the current command was interrupted by the shutdown signal
+		return nil, diags
+	}
+
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpclient.New(ctx))
 	token, err := oauthConfig.Exchange(
 		ctx, code,
 		oauth2.SetAuthURLParam("code_verifier", proofKey),
@@ -527,10 +557,10 @@ func (c *LoginCommand) interactiveGetTokenByCode(hostname svchost.Hostname, cred
 	return token, diags
 }
 
-func (c *LoginCommand) interactiveGetTokenByPassword(hostname svchost.Hostname, credsCtx *loginCredentialsContext, clientConfig *disco.OAuthClient) (*oauth2.Token, tfdiags.Diagnostics) {
+func (c *LoginCommand) interactiveGetTokenByPassword(ctx context.Context, hostname svchost.Hostname, credsCtx *loginCredentialsContext, clientConfig *disco.OAuthClient) (*oauth2.Token, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
-	confirm, confirmDiags := c.interactiveContextConsent(hostname, disco.OAuthOwnerPasswordGrant, credsCtx)
+	confirm, confirmDiags := c.interactiveContextConsent(ctx, hostname, disco.OAuthOwnerPasswordGrant, credsCtx)
 	diags = diags.Append(confirmDiags)
 	if !confirm {
 		diags = diags.Append(errors.New("Login cancelled"))
@@ -540,7 +570,7 @@ func (c *LoginCommand) interactiveGetTokenByPassword(hostname svchost.Hostname, 
 	c.Ui.Output("\n---------------------------------------------------------------------------------\n")
 	c.Ui.Output("OpenTofu must temporarily use your password to request an API token.\nThis password will NOT be saved locally.\n")
 
-	username, err := c.UIInput().Input(context.Background(), &tofu.InputOpts{
+	username, err := c.UIInput().Input(ctx, &tofu.InputOpts{
 		Id:    "username",
 		Query: fmt.Sprintf("Username for %s:", hostname.ForDisplay()),
 	})
@@ -548,7 +578,7 @@ func (c *LoginCommand) interactiveGetTokenByPassword(hostname svchost.Hostname, 
 		diags = diags.Append(fmt.Errorf("Failed to request username: %w", err))
 		return nil, diags
 	}
-	password, err := c.UIInput().Input(context.Background(), &tofu.InputOpts{
+	password, err := c.UIInput().Input(ctx, &tofu.InputOpts{
 		Id:     "password",
 		Query:  fmt.Sprintf("Password for %s:", hostname.ForDisplay()),
 		Secret: true,
@@ -563,7 +593,7 @@ func (c *LoginCommand) interactiveGetTokenByPassword(hostname svchost.Hostname, 
 		Endpoint: clientConfig.Endpoint(),
 		Scopes:   clientConfig.Scopes,
 	}
-	token, err := oauthConfig.PasswordCredentialsToken(context.Background(), username, password)
+	token, err := oauthConfig.PasswordCredentialsToken(ctx, username, password)
 	if err != nil {
 		// FIXME: The OAuth2 library generates errors that are not appropriate
 		// for a Terraform end-user audience, so once we have more experience
@@ -579,10 +609,10 @@ func (c *LoginCommand) interactiveGetTokenByPassword(hostname svchost.Hostname, 
 	return token, diags
 }
 
-func (c *LoginCommand) interactiveGetTokenByUI(hostname svchost.Hostname, credsCtx *loginCredentialsContext, service *url.URL) (svcauth.HostCredentialsToken, tfdiags.Diagnostics) {
+func (c *LoginCommand) interactiveGetTokenByUI(ctx context.Context, hostname svchost.Hostname, credsCtx *loginCredentialsContext, service *url.URL) (svcauth.HostCredentialsToken, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 
-	confirm, confirmDiags := c.interactiveContextConsent(hostname, disco.OAuthGrantType(""), credsCtx)
+	confirm, confirmDiags := c.interactiveContextConsent(ctx, hostname, disco.OAuthGrantType(""), credsCtx)
 	diags = diags.Append(confirmDiags)
 	if !confirm {
 		diags = diags.Append(errors.New("Login cancelled"))
@@ -631,7 +661,7 @@ func (c *LoginCommand) interactiveGetTokenByUI(hostname svchost.Hostname, credsC
 		}
 	}
 
-	token, err := c.UIInput().Input(context.Background(), &tofu.InputOpts{
+	token, err := c.UIInput().Input(ctx, &tofu.InputOpts{
 		Id:     "token",
 		Query:  fmt.Sprintf("Token for %s:", hostname.ForDisplay()),
 		Secret: true,
@@ -648,12 +678,16 @@ func (c *LoginCommand) interactiveGetTokenByUI(hostname svchost.Hostname, credsC
 		Token:    token,
 		Headers:  make(http.Header),
 	}
+
+	// Update user-agent from 'go-tfe' to opentofu
+	cfg.Headers.Set("User-Agent", httpclient.OpenTofuUserAgent(version.String()))
+
 	client, err := tfe.NewClient(cfg)
 	if err != nil {
 		diags = diags.Append(fmt.Errorf("Failed to create API client: %w", err))
 		return "", diags
 	}
-	user, err := client.Users.ReadCurrent(context.Background())
+	user, err := client.Users.ReadCurrent(ctx)
 	if err == tfe.ErrUnauthorized {
 		diags = diags.Append(fmt.Errorf("Token is invalid: %w", err))
 		return "", diags
@@ -666,7 +700,7 @@ func (c *LoginCommand) interactiveGetTokenByUI(hostname svchost.Hostname, credsC
 	return svcauth.HostCredentialsToken(token), nil
 }
 
-func (c *LoginCommand) interactiveContextConsent(hostname svchost.Hostname, grantType disco.OAuthGrantType, credsCtx *loginCredentialsContext) (bool, tfdiags.Diagnostics) {
+func (c *LoginCommand) interactiveContextConsent(ctx context.Context, hostname svchost.Hostname, grantType disco.OAuthGrantType, credsCtx *loginCredentialsContext) (bool, tfdiags.Diagnostics) {
 	var diags tfdiags.Diagnostics
 	mechanism := "OAuth"
 	if grantType == "" {
@@ -692,7 +726,7 @@ func (c *LoginCommand) interactiveContextConsent(hostname svchost.Hostname, gran
 		}
 	}
 
-	v, err := c.UIInput().Input(context.Background(), &tofu.InputOpts{
+	v, err := c.UIInput().Input(ctx, &tofu.InputOpts{
 		Id:          "approve",
 		Query:       "Do you want to proceed?",
 		Description: `Only 'yes' will be accepted to confirm.`,
@@ -749,7 +783,7 @@ func (c *LoginCommand) listenerForCallback(minPort, maxPort uint16) (net.Listene
 }
 
 func (c *LoginCommand) proofKey() (key, challenge string, err error) {
-	// Wel use a UUID-like string as the "proof key for code exchange" (PKCE)
+	// We'll use a UUID-like string as the "proof key for code exchange" (PKCE)
 	// that will eventually authenticate our request to the token endpoint.
 	// Standard UUIDs are explicitly not suitable as secrets according to the
 	// UUID spec, but our go-uuid just generates totally random number sequences

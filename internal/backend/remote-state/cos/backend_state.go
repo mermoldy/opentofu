@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package cos
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"path"
@@ -23,7 +26,7 @@ const (
 )
 
 // Workspaces returns a list of names for the workspaces
-func (b *Backend) Workspaces() ([]string, error) {
+func (b *Backend) Workspaces(context.Context) ([]string, error) {
 	c, err := b.client("tencentcloud")
 	if err != nil {
 		return nil, err
@@ -41,11 +44,11 @@ func (b *Backend) Workspaces() ([]string, error) {
 		if !strings.HasSuffix(vv.Key, stateFileSuffix) {
 			continue
 		}
-		// default worksapce
+		// default workspace
 		if path.Join(b.prefix, b.key) == vv.Key {
 			continue
 		}
-		// <prefix>/<worksapce>/<key>
+		// <prefix>/<workspace>/<key>
 		prefix := strings.TrimRight(b.prefix, "/") + "/"
 		parts := strings.Split(strings.TrimPrefix(vv.Key, prefix), "/")
 		if len(parts) > 0 && parts[0] != "" {
@@ -60,7 +63,7 @@ func (b *Backend) Workspaces() ([]string, error) {
 }
 
 // DeleteWorkspace deletes the named workspaces. The "default" state cannot be deleted.
-func (b *Backend) DeleteWorkspace(name string, _ bool) error {
+func (b *Backend) DeleteWorkspace(_ context.Context, name string, _ bool) error {
 	log.Printf("[DEBUG] delete workspace, workspace: %v", name)
 
 	if name == backend.DefaultStateName || name == "" {
@@ -76,16 +79,16 @@ func (b *Backend) DeleteWorkspace(name string, _ bool) error {
 }
 
 // StateMgr manage the state, if the named state not exists, a new file will created
-func (b *Backend) StateMgr(name string) (statemgr.Full, error) {
+func (b *Backend) StateMgr(ctx context.Context, name string) (statemgr.Full, error) {
 	log.Printf("[DEBUG] state manager, current workspace: %v", name)
 
 	c, err := b.client(name)
 	if err != nil {
 		return nil, err
 	}
-	stateMgr := &remote.State{Client: c}
+	stateMgr := remote.NewState(c, b.encryption)
 
-	ws, err := b.Workspaces()
+	ws, err := b.Workspaces(ctx)
 	if err != nil {
 		return nil, err
 	}

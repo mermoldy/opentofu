@@ -1,16 +1,16 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package getproviders
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,23 +24,22 @@ import (
 
 func TestConfigureDiscoveryRetry(t *testing.T) {
 	t.Run("default retry", func(t *testing.T) {
-		if discoveryRetry != defaultRetry {
-			t.Fatalf("expected retry %q, got %q", defaultRetry, discoveryRetry)
+		if discoveryRetry != registryClientDefaultRetry {
+			t.Fatalf("expected retry %q, got %q", registryClientDefaultRetry, discoveryRetry)
 		}
 
-		rc := newRegistryClient(nil, nil)
-		if rc.httpClient.RetryMax != defaultRetry {
+		rc := newRegistryClient(t.Context(), nil, nil)
+		if rc.httpClient.RetryMax != registryClientDefaultRetry {
 			t.Fatalf("expected client retry %q, got %q",
-				defaultRetry, rc.httpClient.RetryMax)
+				registryClientDefaultRetry, rc.httpClient.RetryMax)
 		}
 	})
 
 	t.Run("configured retry", func(t *testing.T) {
-		defer func(retryEnv string) {
-			os.Setenv(registryDiscoveryRetryEnvName, retryEnv)
-			discoveryRetry = defaultRetry
-		}(os.Getenv(registryDiscoveryRetryEnvName))
-		os.Setenv(registryDiscoveryRetryEnvName, "2")
+		defer func() {
+			discoveryRetry = registryClientDefaultRetry
+		}()
+		t.Setenv(registryDiscoveryRetryEnvName, "2")
 
 		configureDiscoveryRetry()
 		expected := 2
@@ -49,7 +48,7 @@ func TestConfigureDiscoveryRetry(t *testing.T) {
 				expected, discoveryRetry)
 		}
 
-		rc := newRegistryClient(nil, nil)
+		rc := newRegistryClient(t.Context(), nil, nil)
 		if rc.httpClient.RetryMax != expected {
 			t.Fatalf("expected client retry %q, got %q",
 				expected, rc.httpClient.RetryMax)
@@ -64,7 +63,7 @@ func TestConfigureRegistryClientTimeout(t *testing.T) {
 				defaultRequestTimeout.String(), requestTimeout.String())
 		}
 
-		rc := newRegistryClient(nil, nil)
+		rc := newRegistryClient(t.Context(), nil, nil)
 		if rc.httpClient.HTTPClient.Timeout != defaultRequestTimeout {
 			t.Fatalf("expected client timeout %q, got %q",
 				defaultRequestTimeout.String(), rc.httpClient.HTTPClient.Timeout.String())
@@ -72,11 +71,10 @@ func TestConfigureRegistryClientTimeout(t *testing.T) {
 	})
 
 	t.Run("configured timeout", func(t *testing.T) {
-		defer func(timeoutEnv string) {
-			os.Setenv(registryClientTimeoutEnvName, timeoutEnv)
+		defer func() {
 			requestTimeout = defaultRequestTimeout
-		}(os.Getenv(registryClientTimeoutEnvName))
-		os.Setenv(registryClientTimeoutEnvName, "20")
+		}()
+		t.Setenv(registryClientTimeoutEnvName, "20")
 
 		configureRequestTimeout()
 		expected := 20 * time.Second
@@ -85,7 +83,7 @@ func TestConfigureRegistryClientTimeout(t *testing.T) {
 				expected, requestTimeout.String())
 		}
 
-		rc := newRegistryClient(nil, nil)
+		rc := newRegistryClient(t.Context(), nil, nil)
 		if rc.httpClient.HTTPClient.Timeout != expected {
 			t.Fatalf("expected client timeout %q, got %q",
 				expected, rc.httpClient.HTTPClient.Timeout.String())
@@ -124,12 +122,12 @@ func testRegistryServices(t *testing.T) (services *disco.Disco, baseURL string, 
 		"providers.v1": server.URL + "/fails-immediately/",
 	})
 
-	// We'll also permit registry.terraform.io here just because it's our
+	// We'll also permit registry.opentofu.org here just because it's our
 	// default and has some unique features that are not allowed on any other
 	// hostname. It behaves the same as example.com, which should be preferred
 	// if you're not testing something specific to the default registry in order
 	// to ensure that most things are hostname-agnostic.
-	services.ForceHostServices(svchost.Hostname("registry.terraform.io"), map[string]interface{}{
+	services.ForceHostServices(svchost.Hostname("registry.opentofu.org"), map[string]interface{}{
 		"providers.v1": server.URL + "/providers/v1/",
 	})
 
@@ -151,6 +149,13 @@ func testRegistrySource(t *testing.T) (source *RegistrySource, baseURL string, c
 }
 
 func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
+	// Helper that assumes http writes will always succeed
+	write := func(data []byte) {
+		if _, err := resp.Write(data); err != nil {
+			panic(err)
+		}
+	}
+
 	path := req.URL.EscapedPath()
 	if strings.HasPrefix(path, "/fails-immediately/") {
 		// Here we take over the socket and just close it immediately, to
@@ -160,13 +165,13 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 			// Not hijackable, so we'll just fail normally.
 			// If this happens, tests relying on this will fail.
 			resp.WriteHeader(500)
-			resp.Write([]byte(`cannot hijack`))
+			write([]byte(`cannot hijack`))
 			return
 		}
 		conn, _, err := hijacker.Hijack()
 		if err != nil {
 			resp.WriteHeader(500)
-			resp.Write([]byte(`hijack failed`))
+			write([]byte(`hijack failed`))
 			return
 		}
 		conn.Close()
@@ -176,28 +181,28 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 	if strings.HasPrefix(path, "/pkg/") {
 		switch path {
 		case "/pkg/awesomesauce/happycloud_1.2.0.zip":
-			resp.Write([]byte("some zip file"))
+			write([]byte("some zip file"))
 		case "/pkg/awesomesauce/happycloud_1.2.0_SHA256SUMS":
-			resp.Write([]byte("000000000000000000000000000000000000000000000000000000000000f00d happycloud_1.2.0.zip\n000000000000000000000000000000000000000000000000000000000000face happycloud_1.2.0_face.zip\n"))
+			write([]byte("000000000000000000000000000000000000000000000000000000000000f00d happycloud_1.2.0.zip\n000000000000000000000000000000000000000000000000000000000000face happycloud_1.2.0_face.zip\n"))
 		case "/pkg/awesomesauce/happycloud_1.2.0_SHA256SUMS.sig":
-			resp.Write([]byte("GPG signature"))
+			write([]byte("GPG signature"))
 		default:
 			resp.WriteHeader(404)
-			resp.Write([]byte("unknown package file download"))
+			write([]byte("unknown package file download"))
 		}
 		return
 	}
 
 	if !strings.HasPrefix(path, "/providers/v1/") {
 		resp.WriteHeader(404)
-		resp.Write([]byte(`not a provider registry endpoint`))
+		write([]byte(`not a provider registry endpoint`))
 		return
 	}
 
 	pathParts := strings.Split(path, "/")[3:]
 	if len(pathParts) < 3 {
 		resp.WriteHeader(404)
-		resp.Write([]byte(`unexpected number of path parts`))
+		write([]byte(`unexpected number of path parts`))
 		return
 	}
 	log.Printf("[TRACE] fake provider registry request for %#v", pathParts)
@@ -205,7 +210,7 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 	if pathParts[2] == "versions" {
 		if len(pathParts) != 3 {
 			resp.WriteHeader(404)
-			resp.Write([]byte(`extraneous path parts`))
+			write([]byte(`extraneous path parts`))
 			return
 		}
 
@@ -216,42 +221,42 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 			// Note that these version numbers are intentionally misordered
 			// so we can test that the client-side code places them in the
 			// correct order (lowest precedence first).
-			resp.Write([]byte(`{"versions":[{"version":"0.1.0","protocols":["1.0"]},{"version":"2.0.0","protocols":["99.0"]},{"version":"1.2.0","protocols":["5.0"]}, {"version":"1.0.0","protocols":["5.0"]}]}`))
+			write([]byte(`{"versions":[{"version":"0.1.0","protocols":["1.0"]},{"version":"2.0.0","protocols":["99.0"]},{"version":"1.2.0","protocols":["5.0"]}, {"version":"1.0.0","protocols":["5.0"]}]}`))
 		case "weaksauce/unsupported-protocol":
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
-			resp.Write([]byte(`{"versions":[{"version":"1.0.0","protocols":["0.1"]}]}`))
+			write([]byte(`{"versions":[{"version":"1.0.0","protocols":["0.1"]}]}`))
 		case "weaksauce/protocol-six":
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
-			resp.Write([]byte(`{"versions":[{"version":"1.0.0","protocols":["6.0"]}]}`))
+			write([]byte(`{"versions":[{"version":"1.0.0","protocols":["6.0"]}]}`))
 		case "weaksauce/no-versions":
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
-			resp.Write([]byte(`{"versions":[],"warnings":["this provider is weaksauce"]}`))
+			write([]byte(`{"versions":[],"warnings":["this provider is weaksauce"]}`))
 		case "-/legacy":
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
 			// This response is used for testing LookupLegacyProvider
-			resp.Write([]byte(`{"id":"legacycorp/legacy"}`))
+			write([]byte(`{"id":"legacycorp/legacy"}`))
 		case "-/moved":
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
 			// This response is used for testing LookupLegacyProvider
-			resp.Write([]byte(`{"id":"hashicorp/moved","moved_to":"acme/moved"}`))
+			write([]byte(`{"id":"hashicorp/moved","moved_to":"acme/moved"}`))
 		case "-/changetype":
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
 			// This (unrealistic) response is used for error handling code coverage
-			resp.Write([]byte(`{"id":"legacycorp/newtype"}`))
+			write([]byte(`{"id":"legacycorp/newtype"}`))
 		case "-/invalid":
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
 			// This (unrealistic) response is used for error handling code coverage
-			resp.Write([]byte(`{"id":"some/invalid/id/string"}`))
+			write([]byte(`{"id":"some/invalid/id/string"}`))
 		default:
 			resp.WriteHeader(404)
-			resp.Write([]byte(`unknown namespace or provider type`))
+			write([]byte(`unknown namespace or provider type`))
 		}
 		return
 	}
@@ -261,7 +266,7 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 		case "awesomesauce/happycloud":
 			if pathParts[4] == "nonexist" {
 				resp.WriteHeader(404)
-				resp.Write([]byte(`unsupported OS`))
+				write([]byte(`unsupported OS`))
 				return
 			}
 			var protocols []string
@@ -295,20 +300,20 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 			enc, err := json.Marshal(body)
 			if err != nil {
 				resp.WriteHeader(500)
-				resp.Write([]byte("failed to encode body"))
+				write([]byte("failed to encode body"))
 			}
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
-			resp.Write(enc)
+			write(enc)
 		default:
 			resp.WriteHeader(404)
-			resp.Write([]byte(`unknown namespace/provider/version/architecture`))
+			write([]byte(`unknown namespace/provider/version/architecture`))
 		}
 		return
 	}
 
 	resp.WriteHeader(404)
-	resp.Write([]byte(`unrecognized path scheme`))
+	write([]byte(`unrecognized path scheme`))
 }
 
 func TestProviderVersions(t *testing.T) {
@@ -343,12 +348,12 @@ func TestProviderVersions(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.provider.String(), func(t *testing.T) {
-			client, err := source.registryClient(test.provider.Hostname)
+			client, err := source.registryClient(t.Context(), test.provider.Hostname)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			gotVersions, _, err := client.ProviderVersions(context.Background(), test.provider)
+			gotVersions, _, err := client.ProviderVersions(t.Context(), test.provider)
 
 			if err != nil {
 				if test.wantErr == "" {
@@ -428,12 +433,12 @@ func TestFindClosestProtocolCompatibleVersion(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			client, err := source.registryClient(test.provider.Hostname)
+			client, err := source.registryClient(t.Context(), test.provider.Hostname)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			got, err := client.findClosestProtocolCompatibleVersion(context.Background(), test.provider, test.version)
+			got, err := client.findClosestProtocolCompatibleVersion(t.Context(), test.provider, test.version)
 
 			if err != nil {
 				if test.wantErr == "" {

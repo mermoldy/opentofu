@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
@@ -20,6 +22,7 @@ import (
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs/configschema"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/providers"
 	"github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/states/statefile"
@@ -33,7 +36,7 @@ func TestRefresh(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -73,7 +76,7 @@ func TestRefresh(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 
-	newStateFile, err := statefile.Read(f)
+	newStateFile, err := statefile.Read(f, encryption.StateEncryptionDisabled())
 	f.Close()
 	if err != nil {
 		t.Fatalf("err: %s", err)
@@ -90,7 +93,7 @@ func TestRefresh_empty(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh-empty"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	p := testProvider()
 	view, done := testView(t)
@@ -124,7 +127,7 @@ func TestRefresh_lockedState(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -169,14 +172,7 @@ func TestRefresh_lockedState(t *testing.T) {
 }
 
 func TestRefresh_cwd(t *testing.T) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	if err := os.Chdir(testFixturePath("refresh")); err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	defer os.Chdir(cwd)
+	t.Chdir(testFixturePath("refresh"))
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -216,7 +212,7 @@ func TestRefresh_cwd(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 
-	newStateFile, err := statefile.Read(f)
+	newStateFile, err := statefile.Read(f, encryption.StateEncryptionDisabled())
 	f.Close()
 	if err != nil {
 		t.Fatalf("err: %s", err)
@@ -233,7 +229,7 @@ func TestRefresh_defaultState(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	originalState := testState()
 
@@ -241,7 +237,7 @@ func TestRefresh_defaultState(t *testing.T) {
 	// default filename.
 	statePath := testStateFile(t, originalState)
 
-	localState := statemgr.NewFilesystem(statePath)
+	localState := statemgr.NewFilesystem(statePath, encryption.StateEncryptionDisabled())
 	if err := localState.RefreshState(); err != nil {
 		t.Fatal(err)
 	}
@@ -251,14 +247,7 @@ func TestRefresh_defaultState(t *testing.T) {
 	}
 
 	// Change to that directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	if err := os.Chdir(filepath.Dir(statePath)); err != nil {
-		t.Fatalf("err: %s", err)
-	}
-	defer os.Chdir(cwd)
+	t.Chdir(filepath.Dir(statePath))
 
 	p := testProvider()
 	view, done := testView(t)
@@ -295,7 +284,7 @@ func TestRefresh_defaultState(t *testing.T) {
 	actual := newState.RootModule().Resources["test_instance.foo"].Instances[addrs.NoKey].Current
 	expected := &states.ResourceInstanceObjectSrc{
 		Status:       states.ObjectReady,
-		AttrsJSON:    []byte("{\n            \"ami\": null,\n            \"id\": \"yes\"\n          }"),
+		AttrsJSON:    []byte(`{"ami":null,"id":"yes"}`),
 		Dependencies: []addrs.ConfigResource{},
 	}
 	if !reflect.DeepEqual(actual, expected) {
@@ -315,7 +304,7 @@ func TestRefresh_outPath(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -365,7 +354,7 @@ func TestRefresh_outPath(t *testing.T) {
 	actual := newState.RootModule().Resources["test_instance.foo"].Instances[addrs.NoKey].Current
 	expected := &states.ResourceInstanceObjectSrc{
 		Status:       states.ObjectReady,
-		AttrsJSON:    []byte("{\n            \"ami\": null,\n            \"id\": \"yes\"\n          }"),
+		AttrsJSON:    []byte(`{"ami":null,"id":"yes"}`),
 		Dependencies: []addrs.ConfigResource{},
 	}
 	if !reflect.DeepEqual(actual, expected) {
@@ -384,7 +373,7 @@ func TestRefresh_var(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh-var"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -421,7 +410,7 @@ func TestRefresh_varFile(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh-var"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -463,7 +452,7 @@ func TestRefresh_varFileDefault(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh-var"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -504,7 +493,7 @@ func TestRefresh_varsUnset(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh-unset-var"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// Disable test mode so input would be asked
 	test = false
@@ -552,7 +541,7 @@ func TestRefresh_backup(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -567,7 +556,7 @@ func TestRefresh_backup(t *testing.T) {
 
 	// Need to put some state content in the output file so that there's
 	// something to back up.
-	err = statefile.Write(statefile.New(state, "baz", 0), outf)
+	err = statefile.Write(statefile.New(state, "baz", 0), outf, encryption.StateEncryptionDisabled())
 	if err != nil {
 		t.Fatalf("error writing initial output state file %s", err)
 	}
@@ -618,7 +607,7 @@ func TestRefresh_backup(t *testing.T) {
 	actual := newState.RootModule().Resources["test_instance.foo"].Instances[addrs.NoKey].Current
 	expected := &states.ResourceInstanceObjectSrc{
 		Status:       states.ObjectReady,
-		AttrsJSON:    []byte("{\n            \"ami\": null,\n            \"id\": \"changed\"\n          }"),
+		AttrsJSON:    []byte(`{"ami":null,"id":"changed"}`),
 		Dependencies: []addrs.ConfigResource{},
 	}
 	if !reflect.DeepEqual(actual, expected) {
@@ -637,7 +626,7 @@ func TestRefresh_disableBackup(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -690,7 +679,7 @@ func TestRefresh_disableBackup(t *testing.T) {
 	actual := newState.RootModule().Resources["test_instance.foo"].Instances[addrs.NoKey].Current
 	expected := &states.ResourceInstanceObjectSrc{
 		Status:       states.ObjectReady,
-		AttrsJSON:    []byte("{\n            \"ami\": null,\n            \"id\": \"yes\"\n          }"),
+		AttrsJSON:    []byte(`{"ami":null,"id":"yes"}`),
 		Dependencies: []addrs.ConfigResource{},
 	}
 	if !reflect.DeepEqual(actual, expected) {
@@ -712,7 +701,7 @@ func TestRefresh_displaysOutputs(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh-output"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -759,7 +748,7 @@ func TestRefresh_displaysOutputs(t *testing.T) {
 func TestRefresh_targeted(t *testing.T) {
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("refresh-targeted"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	state := testState()
 	statePath := testStateFile(t, state)
@@ -818,9 +807,9 @@ func TestRefresh_targetFlagsDiags(t *testing.T) {
 
 	for target, wantDiag := range testCases {
 		t.Run(target, func(t *testing.T) {
-			td := testTempDir(t)
+			td := testTempDirRealpath(t)
 			defer os.RemoveAll(td)
-			defer testChdir(t, td)()
+			t.Chdir(td)
 
 			view, done := testView(t)
 			c := &RefreshCommand{
@@ -849,11 +838,105 @@ func TestRefresh_targetFlagsDiags(t *testing.T) {
 	}
 }
 
+// Config with multiple resources, targeted refresh with exclude
+func TestRefresh_excluded(t *testing.T) {
+	td := t.TempDir()
+	testCopyDir(t, testFixturePath("refresh-targeted"), td)
+	t.Chdir(td)
+
+	state := testState()
+	statePath := testStateFile(t, state)
+
+	p := testProvider()
+	p.GetProviderSchemaResponse = &providers.GetProviderSchemaResponse{
+		ResourceTypes: map[string]providers.Schema{
+			"test_instance": {
+				Block: &configschema.Block{
+					Attributes: map[string]*configschema.Attribute{
+						"id": {Type: cty.String, Computed: true},
+					},
+				},
+			},
+		},
+	}
+	p.PlanResourceChangeFn = func(req providers.PlanResourceChangeRequest) providers.PlanResourceChangeResponse {
+		return providers.PlanResourceChangeResponse{
+			PlannedState: req.ProposedNewState,
+		}
+	}
+
+	view, done := testView(t)
+	c := &RefreshCommand{
+		Meta: Meta{
+			testingOverrides: metaOverridesForProvider(p),
+			View:             view,
+		},
+	}
+
+	args := []string{
+		"-exclude", "test_instance.bar",
+		"-state", statePath,
+	}
+	code := c.Run(args)
+	output := done(t)
+	if code != 0 {
+		t.Fatalf("bad: %d\n\n%s", code, output.Stderr())
+	}
+
+	got := output.Stdout()
+	if want := "test_instance.foo: Refreshing"; !strings.Contains(got, want) {
+		t.Fatalf("expected output to contain %q, got:\n%s", want, got)
+	}
+	if doNotWant := "test_instance.bar: Refreshing"; strings.Contains(got, doNotWant) {
+		t.Fatalf("expected output not to contain %q, got:\n%s", doNotWant, got)
+	}
+}
+
+// Diagnostics for invalid -exclude flags
+func TestRefresh_excludeFlagsDiags(t *testing.T) {
+	testCases := map[string]string{
+		"test_instance.": "Dot must be followed by attribute name.",
+		"test_instance":  "Resource specification must include a resource type and name.",
+	}
+
+	for exclude, wantDiag := range testCases {
+		t.Run(exclude, func(t *testing.T) {
+			td := testTempDirRealpath(t)
+			defer os.RemoveAll(td)
+			t.Chdir(td)
+
+			view, done := testView(t)
+			c := &RefreshCommand{
+				Meta: Meta{
+					View: view,
+				},
+			}
+
+			args := []string{
+				"-exclude", exclude,
+			}
+			code := c.Run(args)
+			output := done(t)
+			if code != 1 {
+				t.Fatalf("bad: %d\n\n%s", code, output.Stderr())
+			}
+
+			got := output.Stderr()
+			if !strings.Contains(got, exclude) {
+				t.Fatalf("bad error output, want %q, got:\n%s", exclude, got)
+			}
+			if !strings.Contains(got, wantDiag) {
+				t.Fatalf("bad error output, want %q, got:\n%s", wantDiag, got)
+			}
+		})
+	}
+}
+
 func TestRefresh_warnings(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("apply"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	p := testProvider()
 	p.GetProviderSchemaResponse = refreshFixtureSchema()
@@ -968,10 +1051,10 @@ foo = "bar"
 const testRefreshStr = `
 test_instance.foo:
   ID = yes
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
 `
 const testRefreshCwdStr = `
 test_instance.foo:
   ID = yes
-  provider = provider["registry.terraform.io/hashicorp/test"]
+  provider = provider["registry.opentofu.org/hashicorp/test"]
 `

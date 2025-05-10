@@ -1,14 +1,19 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
+	otelAttr "go.opentelemetry.io/otel/attribute"
+	otelTrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
@@ -19,6 +24,7 @@ import (
 	"github.com/opentofu/opentofu/internal/providers"
 	"github.com/opentofu/opentofu/internal/provisioners"
 	"github.com/opentofu/opentofu/internal/tfdiags"
+	"github.com/opentofu/opentofu/internal/tracing"
 )
 
 // NodeValidatableResource represents a resource that is used for validation
@@ -44,26 +50,43 @@ func (n *NodeValidatableResource) Path() addrs.ModuleInstance {
 }
 
 // GraphNodeEvalable
-func (n *NodeValidatableResource) Execute(ctx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+func (n *NodeValidatableResource) Execute(ctx context.Context, evalCtx EvalContext, op walkOperation) (diags tfdiags.Diagnostics) {
+	_, span := tracing.Tracer().Start(
+		ctx, traceNameValidateResource,
+		otelTrace.WithAttributes(
+			otelAttr.String(traceAttrConfigResourceAddr, n.Addr.String()),
+		),
+	)
+	defer span.End()
+
 	if n.Config == nil {
 		return diags
 	}
 
-	diags = diags.Append(n.validateResource(ctx))
+	diags = diags.Append(n.validateResource(evalCtx))
 
-	diags = diags.Append(n.validateCheckRules(ctx, n.Config))
+	diags = diags.Append(n.validateCheckRules(evalCtx, n.Config))
 
 	if managed := n.Config.Managed; managed != nil {
 		// Validate all the provisioners
 		for _, p := range managed.Provisioners {
+			// Create a local shallow copy of the provisioner
+			provisioner := *p
+
 			if p.Connection == nil {
-				p.Connection = n.Config.Managed.Connection
+				provisioner.Connection = n.Config.Managed.Connection
 			} else if n.Config.Managed.Connection != nil {
-				p.Connection.Config = configs.MergeBodies(n.Config.Managed.Connection.Config, p.Connection.Config)
+				// Merge the connection with n.Config.Managed.Connection, but only in
+				// our local provisioner, as it will only be used by
+				// "validateProvisioner"
+				connection := &configs.Connection{}
+				*connection = *p.Connection
+				connection.Config = configs.MergeBodies(n.Config.Managed.Connection.Config, connection.Config)
+				provisioner.Connection = connection
 			}
 
 			// Validate Provisioner Config
-			diags = diags.Append(n.validateProvisioner(ctx, p))
+			diags = diags.Append(n.validateProvisioner(evalCtx, &provisioner))
 			if diags.HasErrors() {
 				return diags
 			}
@@ -271,7 +294,7 @@ var connectionBlockSupersetSchema = &configschema.Block{
 func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
-	provider, providerSchema, err := getProvider(ctx, n.ResolvedProvider)
+	provider, providerSchema, err := getProvider(ctx, n.ResolvedProvider.ProviderConfig, addrs.NoKey) // Provider Instance Keys are ignored during validate
 	diags = diags.Append(err)
 	if diags.HasErrors() {
 		return diags
@@ -554,16 +577,17 @@ func validateCount(ctx EvalContext, expr hcl.Expression) (diags tfdiags.Diagnost
 }
 
 func validateForEach(ctx EvalContext, expr hcl.Expression) (diags tfdiags.Diagnostics) {
-	val, forEachDiags := evaluateForEachExpressionValue(expr, ctx, true)
+	const unknownsAllowed = true
+	const tupleNotAllowed = false
+
+	val, forEachDiags := evaluateForEachExpressionValue(expr, ctx, unknownsAllowed, tupleNotAllowed, nil)
 	// If the value isn't known then that's the best we can do for now, but
 	// we'll check more thoroughly during the plan walk
 	if !val.IsKnown() {
 		return diags
 	}
 
-	if forEachDiags.HasErrors() {
-		diags = diags.Append(forEachDiags)
-	}
+	diags = diags.Append(forEachDiags)
 
 	return diags
 }

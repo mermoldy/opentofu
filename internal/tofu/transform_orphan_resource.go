@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"log"
 
 	"github.com/opentofu/opentofu/internal/configs"
@@ -34,7 +37,7 @@ type OrphanResourceInstanceTransformer struct {
 	skip bool
 }
 
-func (t *OrphanResourceInstanceTransformer) Transform(g *Graph) error {
+func (t *OrphanResourceInstanceTransformer) Transform(_ context.Context, g *Graph) error {
 	if t.skip {
 		return nil
 	}

@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package oss
@@ -11,13 +13,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/endpoints"
+	"golang.org/x/net/http/httpproxy"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials"
@@ -32,6 +34,7 @@ import (
 	"github.com/mitchellh/go-homedir"
 
 	"github.com/opentofu/opentofu/internal/backend"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/httpclient"
 	"github.com/opentofu/opentofu/internal/legacy/helper/schema"
 	"github.com/opentofu/opentofu/version"
@@ -88,7 +91,7 @@ func deprecatedAssumeRoleSchema() *schema.Schema {
 }
 
 // New creates a new backend for OSS remote state.
-func New() backend.Backend {
+func New(enc encryption.StateEncryption) backend.Backend {
 	s := &schema.Backend{
 		Schema: map[string]*schema.Schema{
 			"access_key": {
@@ -260,13 +263,14 @@ func New() backend.Backend {
 		},
 	}
 
-	result := &Backend{Backend: s}
+	result := &Backend{Backend: s, encryption: enc}
 	result.Backend.ConfigureFunc = result.configure
 	return result
 }
 
 type Backend struct {
 	*schema.Backend
+	encryption encryption.StateEncryption
 
 	// The fields below are set from configure
 	ossClient *oss.Client
@@ -406,7 +410,10 @@ func (b *Backend) configure(ctx context.Context) error {
 	}
 	options = append(options, oss.UserAgent(httpclient.OpenTofuUserAgent(TerraformVersion)))
 
-	proxyUrl := getHttpProxyUrl()
+	proxyUrl, err := getHttpProxyUrl(endpoint)
+	if err != nil {
+		return err
+	}
 	if proxyUrl != nil {
 		options = append(options, oss.Proxy(proxyUrl.String()))
 	}
@@ -689,19 +696,11 @@ func getAuthCredentialByEcsRoleName(ecsRoleName string) (accessKey, secretKey, t
 	return accessKeyId.(string), accessKeySecret.(string), securityToken.(string), nil
 }
 
-func getHttpProxyUrl() *url.URL {
-	for _, v := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
-		value := strings.Trim(os.Getenv(v), " ")
-		if value != "" {
-			if !regexp.MustCompile(`^http(s)?://`).MatchString(value) {
-				value = fmt.Sprintf("https://%s", value)
-			}
-			proxyUrl, err := url.Parse(value)
-			if err == nil {
-				return proxyUrl
-			}
-			break
-		}
+func getHttpProxyUrl(rawUrl string) (*url.URL, error) {
+	pc := httpproxy.FromEnvironment()
+	u, err := url.Parse(rawUrl)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return pc.ProxyFunc()(u)
 }

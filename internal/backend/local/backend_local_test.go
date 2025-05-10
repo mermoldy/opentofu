@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package local
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 	"github.com/opentofu/opentofu/internal/command/views"
 	"github.com/opentofu/opentofu/internal/configs/configload"
 	"github.com/opentofu/opentofu/internal/configs/configschema"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/initwd"
 	"github.com/opentofu/opentofu/internal/plans"
 	"github.com/opentofu/opentofu/internal/plans/planfile"
@@ -32,8 +36,7 @@ func TestLocalRun(t *testing.T) {
 	configDir := "./testdata/empty"
 	b := TestLocal(t)
 
-	_, configLoader, configCleanup := initwd.MustLoadConfigForTests(t, configDir, "tests")
-	defer configCleanup()
+	_, configLoader := initwd.MustLoadConfigForTests(t, configDir, "tests")
 
 	streams, _ := terminal.StreamsForTesting(t)
 	view := views.NewView(streams)
@@ -46,7 +49,7 @@ func TestLocalRun(t *testing.T) {
 		StateLocker:  stateLocker,
 	}
 
-	_, _, diags := b.LocalRun(op)
+	_, _, diags := b.LocalRun(context.Background(), op)
 	if diags.HasErrors() {
 		t.Fatalf("unexpected error: %s", diags.Err().Error())
 	}
@@ -63,8 +66,7 @@ func TestLocalRun_error(t *testing.T) {
 	// should then cause LocalRun to return with the state unlocked.
 	b.Backend = backendWithStateStorageThatFailsRefresh{}
 
-	_, configLoader, configCleanup := initwd.MustLoadConfigForTests(t, configDir, "tests")
-	defer configCleanup()
+	_, configLoader := initwd.MustLoadConfigForTests(t, configDir, "tests")
 
 	streams, _ := terminal.StreamsForTesting(t)
 	view := views.NewView(streams)
@@ -77,7 +79,7 @@ func TestLocalRun_error(t *testing.T) {
 		StateLocker:  stateLocker,
 	}
 
-	_, _, diags := b.LocalRun(op)
+	_, _, diags := b.LocalRun(context.Background(), op)
 	if !diags.HasErrors() {
 		t.Fatal("unexpected success")
 	}
@@ -90,12 +92,11 @@ func TestLocalRun_cloudPlan(t *testing.T) {
 	configDir := "./testdata/apply"
 	b := TestLocal(t)
 
-	_, configLoader, configCleanup := initwd.MustLoadConfigForTests(t, configDir, "tests")
-	defer configCleanup()
+	_, configLoader := initwd.MustLoadConfigForTests(t, configDir, "tests")
 
 	planPath := "./testdata/plan-bookmark/bookmark.json"
 
-	planFile, err := planfile.OpenWrapped(planPath)
+	planFile, err := planfile.OpenWrapped(planPath, encryption.PlanEncryptionDisabled())
 	if err != nil {
 		t.Fatalf("unexpected error reading planfile: %s", err)
 	}
@@ -112,7 +113,7 @@ func TestLocalRun_cloudPlan(t *testing.T) {
 		StateLocker:  stateLocker,
 	}
 
-	_, _, diags := b.LocalRun(op)
+	_, _, diags := b.LocalRun(context.Background(), op)
 	if !diags.HasErrors() {
 		t.Fatal("unexpected success")
 	}
@@ -125,20 +126,19 @@ func TestLocalRun_stalePlan(t *testing.T) {
 	configDir := "./testdata/apply"
 	b := TestLocal(t)
 
-	_, configLoader, configCleanup := initwd.MustLoadConfigForTests(t, configDir, "tests")
-	defer configCleanup()
+	_, configLoader := initwd.MustLoadConfigForTests(t, configDir, "tests")
 
 	// Write an empty state file with serial 3
 	sf, err := os.Create(b.StatePath)
 	if err != nil {
 		t.Fatalf("unexpected error creating state file %s: %s", b.StatePath, err)
 	}
-	if err := statefile.Write(statefile.New(states.NewState(), "boop", 3), sf); err != nil {
+	if err := statefile.Write(statefile.New(states.NewState(), "boop", 3), sf, encryption.StateEncryptionDisabled()); err != nil {
 		t.Fatalf("unexpected error writing state file: %s", err)
 	}
 
 	// Refresh the state
-	sm, err := b.StateMgr("")
+	sm, err := b.StateMgr(t.Context(), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -178,10 +178,10 @@ func TestLocalRun_stalePlan(t *testing.T) {
 		StateFile:            stateFile,
 		Plan:                 plan,
 	}
-	if err := planfile.Create(planPath, planfileArgs); err != nil {
+	if err := planfile.Create(planPath, planfileArgs, encryption.PlanEncryptionDisabled()); err != nil {
 		t.Fatalf("unexpected error writing planfile: %s", err)
 	}
-	planFile, err := planfile.OpenWrapped(planPath)
+	planFile, err := planfile.OpenWrapped(planPath, encryption.PlanEncryptionDisabled())
 	if err != nil {
 		t.Fatalf("unexpected error reading planfile: %s", err)
 	}
@@ -198,7 +198,7 @@ func TestLocalRun_stalePlan(t *testing.T) {
 		StateLocker:  stateLocker,
 	}
 
-	_, _, diags := b.LocalRun(op)
+	_, _, diags := b.LocalRun(context.Background(), op)
 	if !diags.HasErrors() {
 		t.Fatal("unexpected success")
 	}
@@ -212,7 +212,7 @@ type backendWithStateStorageThatFailsRefresh struct {
 
 var _ backend.Backend = backendWithStateStorageThatFailsRefresh{}
 
-func (b backendWithStateStorageThatFailsRefresh) StateMgr(workspace string) (statemgr.Full, error) {
+func (b backendWithStateStorageThatFailsRefresh) StateMgr(_ context.Context, workspace string) (statemgr.Full, error) {
 	return &stateStorageThatFailsRefresh{}, nil
 }
 
@@ -224,15 +224,15 @@ func (b backendWithStateStorageThatFailsRefresh) PrepareConfig(in cty.Value) (ct
 	return in, nil
 }
 
-func (b backendWithStateStorageThatFailsRefresh) Configure(cty.Value) tfdiags.Diagnostics {
+func (b backendWithStateStorageThatFailsRefresh) Configure(context.Context, cty.Value) tfdiags.Diagnostics {
 	return nil
 }
 
-func (b backendWithStateStorageThatFailsRefresh) DeleteWorkspace(name string, force bool) error {
+func (b backendWithStateStorageThatFailsRefresh) DeleteWorkspace(_ context.Context, name string, force bool) error {
 	return fmt.Errorf("unimplemented")
 }
 
-func (b backendWithStateStorageThatFailsRefresh) Workspaces() ([]string, error) {
+func (b backendWithStateStorageThatFailsRefresh) Workspaces(context.Context) ([]string, error) {
 	return []string{"default"}, nil
 }
 

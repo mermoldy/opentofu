@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package kubernetes
@@ -18,14 +20,14 @@ import (
 
 // Workspaces returns a list of names for the workspaces found in k8s. The default
 // workspace is always returned as the first element in the slice.
-func (b *Backend) Workspaces() ([]string, error) {
-	secretClient, err := b.KubernetesSecretClient()
+func (b *Backend) Workspaces(ctx context.Context) ([]string, error) {
+	secretClient, err := b.getKubernetesSecretClient()
 	if err != nil {
 		return nil, err
 	}
 
 	secrets, err := secretClient.List(
-		context.Background(),
+		ctx,
 		metav1.ListOptions{
 			LabelSelector: tfstateKey + "=true",
 		},
@@ -63,7 +65,7 @@ func (b *Backend) Workspaces() ([]string, error) {
 	return states, nil
 }
 
-func (b *Backend) DeleteWorkspace(name string, _ bool) error {
+func (b *Backend) DeleteWorkspace(_ context.Context, name string, _ bool) error {
 	if name == backend.DefaultStateName || name == "" {
 		return fmt.Errorf("can't delete default state")
 	}
@@ -76,13 +78,13 @@ func (b *Backend) DeleteWorkspace(name string, _ bool) error {
 	return client.Delete()
 }
 
-func (b *Backend) StateMgr(name string) (statemgr.Full, error) {
+func (b *Backend) StateMgr(_ context.Context, name string) (statemgr.Full, error) {
 	c, err := b.remoteClient(name)
 	if err != nil {
 		return nil, err
 	}
 
-	stateMgr := &remote.State{Client: c}
+	stateMgr := remote.NewState(c, b.encryption)
 
 	// Grab the value
 	if err := stateMgr.RefreshState(); err != nil {
@@ -146,12 +148,12 @@ func (b *Backend) remoteClient(name string) (*RemoteClient, error) {
 		return nil, errors.New("missing state name")
 	}
 
-	secretClient, err := b.KubernetesSecretClient()
+	secretClient, err := b.getKubernetesSecretClient()
 	if err != nil {
 		return nil, err
 	}
 
-	leaseClient, err := b.KubernetesLeaseClient()
+	leaseClient, err := b.getKubernetesLeaseClient()
 	if err != nil {
 		return nil, err
 	}
@@ -166,8 +168,4 @@ func (b *Backend) remoteClient(name string) (*RemoteClient, error) {
 	}
 
 	return client, nil
-}
-
-func (b *Backend) client() *RemoteClient {
-	return &RemoteClient{}
 }

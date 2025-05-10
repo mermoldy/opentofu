@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package plans
@@ -32,3 +34,19 @@ const (
 	// "tofu plan".
 	RefreshOnlyMode Mode = 'R'
 )
+
+// UIName returns a name suitable for describing the mode in the UI.
+func (m Mode) UIName() string {
+	switch m {
+	case NormalMode:
+		return "normal"
+	case DestroyMode:
+		return "destroy"
+	case RefreshOnlyMode:
+		return "refresh-only"
+	default:
+		// Should not get here because the cases above should cover every
+		// valid value of this type.
+		return "unknown"
+	}
+}

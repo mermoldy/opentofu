@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"log"
 
 	"github.com/opentofu/opentofu/internal/addrs"
@@ -26,7 +29,7 @@ type OrphanResourceInstanceCountTransformer struct {
 	State         *states.State               // Full global state
 }
 
-func (t *OrphanResourceInstanceCountTransformer) Transform(g *Graph) error {
+func (t *OrphanResourceInstanceCountTransformer) Transform(_ context.Context, g *Graph) error {
 	rs := t.State.Resource(t.Addr)
 	if rs == nil {
 		return nil // Resource doesn't exist in state, so nothing to do!

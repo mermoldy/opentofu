@@ -1,15 +1,19 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package providercache
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,11 +51,52 @@ func TestEnsureProviderVersions(t *testing.T) {
 	// using in this test as the key for installer events that are not
 	// specific to a particular provider.
 	var noProvider addrs.Provider
+
+	// beepProvider (and its associated derived values) represent a provider package
+	// fixture that's realistic enough to really be installed, although the
+	// plugin executable in it is really just a text file placeholder so it
+	// cannot actually be executed after installation.
 	beepProvider := addrs.MustParseProviderSourceString("example.com/foo/beep")
 	beepProviderDir := getproviders.PackageLocalDir("testdata/beep-provider")
+	beepProviderHash := getproviders.HashScheme1.New("2y06Ykj0FRneZfGCTxI9wRTori8iB7ZL5kQ6YyEnh84=")
+
+	// We also derive a zip archive of the beep provider that we can use to test
+	// the slightly-different treatment of installation sources that can provide
+	// an uncompressed archive: specifically, that we can also calculate and record
+	// a "ziphash"-style hash that is based on the zip file itself instead of its content.
+	tempDir := t.TempDir()
+	beepProviderZip := getproviders.PackageLocalArchive(filepath.Join(tempDir, "beep-provider.zip"))
+	{
+		f, err := os.Create(string(beepProviderZip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		zw := zip.NewWriter(f)
+		err = zw.AddFS(os.DirFS(string(beepProviderDir)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = zw.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// We calculate this particular hash dynamically, rather than hard-coding it
+	// as we normally do for these situations in tests, because archive/zip
+	// can generate slightly different entry metadata depending on the platform
+	// where the test is running and other details of the execution environment.
+	// We only care that the final result uses a hash that matches the zip file.
+	beepProviderZipHash, err := getproviders.PackageHashLegacyZipSHA(beepProviderZip)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	fakePlatform := getproviders.Platform{OS: "bleep", Arch: "bloop"}
 	wrongPlatform := getproviders.Platform{OS: "wrong", Arch: "wrong"}
-	beepProviderHash := getproviders.HashScheme1.New("2y06Ykj0FRneZfGCTxI9wRTori8iB7ZL5kQ6YyEnh84=")
 	terraformProvider := addrs.MustParseProviderSourceString("terraform.io/builtin/terraform")
 
 	tests := map[string]Test{
@@ -142,10 +187,135 @@ func TestEnsureProviderVersions(t *testing.T) {
 								beepProvider: getproviders.MustParseVersionConstraints(">= 2.0.0"),
 							},
 						},
+					},
+					beepProvider: {
 						{
-							Event: "ProvidersFetched",
+							Event:    "QueryPackagesBegin",
+							Provider: beepProvider,
+							Args: struct {
+								Constraints string
+								Locked      bool
+							}{">= 2.0.0", false},
+						},
+						{
+							Event:    "QueryPackagesSuccess",
+							Provider: beepProvider,
+							Args:     "2.1.0",
+						},
+						{
+							Event:    "FetchPackageMeta",
+							Provider: beepProvider,
+							Args:     "2.1.0",
+						},
+						{
+							Event:    "FetchPackageBegin",
+							Provider: beepProvider,
+							Args: struct {
+								Version  string
+								Location getproviders.PackageLocation
+								InCache  bool
+							}{"2.1.0", beepProviderDir, false},
+						},
+						{
+							Event:    "ProvidersLockUpdated",
+							Provider: beepProvider,
+							Args: struct {
+								Version string
+								Local   []getproviders.Hash
+								Signed  []getproviders.Hash
+								Prior   []getproviders.Hash
+							}{
+								"2.1.0",
+								[]getproviders.Hash{"h1:2y06Ykj0FRneZfGCTxI9wRTori8iB7ZL5kQ6YyEnh84="},
+								nil,
+								nil,
+							},
+						},
+						{
+							Event:    "FetchPackageSuccess",
+							Provider: beepProvider,
+							Args: struct {
+								Version    string
+								LocalDir   string
+								AuthResult string
+							}{
+								"2.1.0",
+								filepath.Join(dir.BasePath(), "example.com/foo/beep/2.1.0/bleep_bloop"),
+								"unauthenticated",
+							},
+						},
+					},
+				}
+			},
+		},
+		"successful initial install of one provider from a .zip archive": {
+			Source: getproviders.NewMockSource(
+				[]getproviders.PackageMeta{
+					{
+						Provider:       beepProvider,
+						Version:        getproviders.MustParseVersion("2.1.0"),
+						TargetPlatform: fakePlatform,
+						Location:       beepProviderZip,
+						Authentication: getproviders.NewPackageHashAuthentication(
+							fakePlatform, []getproviders.Hash{beepProviderZipHash},
+						),
+					},
+				},
+				nil,
+			),
+			Mode: InstallNewProvidersOnly,
+			Reqs: getproviders.Requirements{
+				beepProvider: getproviders.MustParseVersionConstraints(">= 2.0.0"),
+			},
+			Check: func(t *testing.T, dir *Dir, locks *depsfile.Locks) {
+				if allCached := dir.AllAvailablePackages(); len(allCached) != 1 {
+					t.Errorf("wrong number of cache directory entries; want only one\n%s", spew.Sdump(allCached))
+				}
+				if allLocked := locks.AllProviders(); len(allLocked) != 1 {
+					t.Errorf("wrong number of provider lock entries; want only one\n%s", spew.Sdump(allLocked))
+				}
+
+				gotLock := locks.Provider(beepProvider)
+				wantLock := depsfile.NewProviderLock(
+					beepProvider,
+					getproviders.MustParseVersion("2.1.0"),
+					getproviders.MustParseVersionConstraints(">= 2.0.0"),
+					[]getproviders.Hash{
+						beepProviderHash,
+						beepProviderZipHash, // additional hash should appear when we install from zip
+					},
+				)
+				if diff := cmp.Diff(wantLock, gotLock, depsfile.ProviderLockComparer); diff != "" {
+					t.Errorf("wrong lock entry\n%s", diff)
+				}
+
+				gotEntry := dir.ProviderLatestVersion(beepProvider)
+				wantEntry := &CachedProvider{
+					Provider:   beepProvider,
+					Version:    getproviders.MustParseVersion("2.1.0"),
+					PackageDir: filepath.Join(dir.BasePath(), "example.com/foo/beep/2.1.0/bleep_bloop"),
+				}
+				if diff := cmp.Diff(wantEntry, gotEntry); diff != "" {
+					t.Errorf("wrong cache entry\n%s", diff)
+				}
+			},
+			WantEvents: func(inst *Installer, dir *Dir) map[addrs.Provider][]*testInstallerEventLogItem {
+				return map[addrs.Provider][]*testInstallerEventLogItem{
+					noProvider: {
+						{
+							Event: "PendingProviders",
+							Args: map[addrs.Provider]getproviders.VersionConstraints{
+								beepProvider: getproviders.MustParseVersionConstraints(">= 2.0.0"),
+							},
+						},
+						{
+							Event: "ProvidersAuthenticated",
 							Args: map[addrs.Provider]*getproviders.PackageAuthenticationResult{
-								beepProvider: nil,
+								beepProvider: getproviders.NewPackageAuthenticationResult(getproviders.HashDispositions{
+									beepProviderZipHash: {
+										VerifiedLocally: true,
+									},
+								}),
 							},
 						},
 					},
@@ -174,7 +344,8 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args: struct {
 								Version  string
 								Location getproviders.PackageLocation
-							}{"2.1.0", beepProviderDir},
+								InCache  bool
+							}{"2.1.0", beepProviderZip, false},
 						},
 						{
 							Event:    "ProvidersLockUpdated",
@@ -186,7 +357,14 @@ func TestEnsureProviderVersions(t *testing.T) {
 								Prior   []getproviders.Hash
 							}{
 								"2.1.0",
-								[]getproviders.Hash{"h1:2y06Ykj0FRneZfGCTxI9wRTori8iB7ZL5kQ6YyEnh84="},
+								[]getproviders.Hash{
+									"h1:2y06Ykj0FRneZfGCTxI9wRTori8iB7ZL5kQ6YyEnh84=",
+									// When installing from a .zip archive and using
+									// getproviders.NewPackageHashAuthentication the lock file also
+									// records the "ziphash" of the .zip archive itself, whereas the
+									// "h1" hash is calculated from only the files inside the archive.
+									beepProviderZipHash,
+								},
 								nil,
 								nil,
 							},
@@ -201,7 +379,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 							}{
 								"2.1.0",
 								filepath.Join(dir.BasePath(), "example.com/foo/beep/2.1.0/bleep_bloop"),
-								"unauthenticated",
+								"verified checksum",
 							},
 						},
 					},
@@ -273,12 +451,6 @@ func TestEnsureProviderVersions(t *testing.T) {
 								beepProvider: getproviders.MustParseVersionConstraints(">= 2.0.0"),
 							},
 						},
-						{
-							Event: "ProvidersFetched",
-							Args: map[addrs.Provider]*getproviders.PackageAuthenticationResult{
-								beepProvider: nil,
-							},
-						},
 					},
 					beepProvider: {
 						{
@@ -305,7 +477,8 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args: struct {
 								Version  string
 								Location getproviders.PackageLocation
-							}{"2.1.0", beepProviderDir},
+								InCache  bool
+							}{"2.1.0", beepProviderDir, true},
 						},
 						{
 							Event:    "ProvidersLockUpdated",
@@ -331,8 +504,30 @@ func TestEnsureProviderVersions(t *testing.T) {
 								AuthResult string
 							}{
 								"2.1.0",
-								filepath.Join(dir.BasePath(), "example.com/foo/beep/2.1.0/bleep_bloop"),
+								filepath.Join(inst.globalCacheDir.BasePath(), "example.com/foo/beep/2.1.0/bleep_bloop"),
 								"unauthenticated",
+							},
+						},
+						{
+							Event:    "LinkFromCacheBegin",
+							Provider: beepProvider,
+							Args: struct {
+								Version   string
+								CacheRoot string
+							}{
+								"2.1.0",
+								inst.globalCacheDir.BasePath(),
+							},
+						},
+						{
+							Event:    "LinkFromCacheSuccess",
+							Provider: beepProvider,
+							Args: struct {
+								Version  string
+								LocalDir string
+							}{
+								"2.1.0",
+								filepath.Join(dir.BasePath(), "example.com/foo/beep/2.1.0/bleep_bloop"),
 							},
 						},
 					},
@@ -369,6 +564,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 						Location:       beepProviderDir,
 					},
 					nil,
+					false,
 				)
 				if err != nil {
 					t.Fatalf("failed to populate global cache: %s", err)
@@ -417,12 +613,6 @@ func TestEnsureProviderVersions(t *testing.T) {
 								beepProvider: getproviders.MustParseVersionConstraints(">= 2.0.0"),
 							},
 						},
-						{
-							Event: "ProvidersFetched",
-							Args: map[addrs.Provider]*getproviders.PackageAuthenticationResult{
-								beepProvider: nil,
-							},
-						},
 					},
 					beepProvider: {
 						{
@@ -453,9 +643,11 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args: struct {
 								Version  string
 								Location getproviders.PackageLocation
+								InCache  bool
 							}{
 								"2.1.0",
 								beepProviderDir,
+								true,
 							},
 						},
 						{
@@ -482,8 +674,30 @@ func TestEnsureProviderVersions(t *testing.T) {
 								AuthResult string
 							}{
 								"2.1.0",
-								filepath.Join(dir.BasePath(), "/example.com/foo/beep/2.1.0/bleep_bloop"),
+								filepath.Join(inst.globalCacheDir.BasePath(), "/example.com/foo/beep/2.1.0/bleep_bloop"),
 								"unauthenticated",
+							},
+						},
+						{
+							Event:    "LinkFromCacheBegin",
+							Provider: beepProvider,
+							Args: struct {
+								Version   string
+								CacheRoot string
+							}{
+								"2.1.0",
+								inst.globalCacheDir.BasePath(),
+							},
+						},
+						{
+							Event:    "LinkFromCacheSuccess",
+							Provider: beepProvider,
+							Args: struct {
+								Version  string
+								LocalDir string
+							}{
+								"2.1.0",
+								filepath.Join(dir.BasePath(), "example.com/foo/beep/2.1.0/bleep_bloop"),
 							},
 						},
 					},
@@ -531,6 +745,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 						Location:       beepProviderDir,
 					},
 					nil,
+					false,
 				)
 				if err != nil {
 					t.Fatalf("failed to populate global cache: %s", err)
@@ -595,6 +810,14 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args:     "2.1.0",
 						},
 						{
+							Event:    "ProviderAlreadyInstalled",
+							Provider: beepProvider,
+							Args: struct {
+								Version getproviders.Version
+								InCache bool
+							}{Version: getproviders.MustParseVersion("2.1.0"), InCache: true},
+						},
+						{
 							Event:    "LinkFromCacheBegin",
 							Provider: beepProvider,
 							Args: struct {
@@ -603,21 +826,6 @@ func TestEnsureProviderVersions(t *testing.T) {
 							}{
 								"2.1.0",
 								inst.globalCacheDir.BasePath(),
-							},
-						},
-						{
-							Event:    "ProvidersLockUpdated",
-							Provider: beepProvider,
-							Args: struct {
-								Version string
-								Local   []getproviders.Hash
-								Signed  []getproviders.Hash
-								Prior   []getproviders.Hash
-							}{
-								"2.1.0",
-								[]getproviders.Hash{"h1:2y06Ykj0FRneZfGCTxI9wRTori8iB7ZL5kQ6YyEnh84="},
-								nil,
-								[]getproviders.Hash{"h1:2y06Ykj0FRneZfGCTxI9wRTori8iB7ZL5kQ6YyEnh84="},
 							},
 						},
 						{
@@ -656,7 +864,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 			LockFile: `
 				# This is approximating the awkward situation where the lock
 				# file was populated by someone who installed from a location
-				# other than the origin registry annd so the set of checksums
+				# other than the origin registry and so the set of checksums
 				# is incomplete. In this case we can't prove that our cache
 				# entry is valid and so we silently ignore the cache entry
 				# and try to install from upstream anyway, in the hope that
@@ -696,6 +904,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 						Location:       beepProviderOtherPlatformDir,
 					},
 					nil,
+					false,
 				)
 				if err != nil {
 					t.Fatalf("failed to populate global cache: %s", err)
@@ -744,12 +953,6 @@ func TestEnsureProviderVersions(t *testing.T) {
 								beepProvider: getproviders.MustParseVersionConstraints(">= 2.0.0"),
 							},
 						},
-						{
-							Event: "ProvidersFetched",
-							Args: map[addrs.Provider]*getproviders.PackageAuthenticationResult{
-								beepProvider: nil,
-							},
-						},
 					},
 					beepProvider: {
 						{
@@ -776,9 +979,11 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args: struct {
 								Version  string
 								Location getproviders.PackageLocation
+								InCache  bool
 							}{
 								"2.1.0",
 								beepProviderDir,
+								true,
 							},
 						},
 						{
@@ -805,8 +1010,30 @@ func TestEnsureProviderVersions(t *testing.T) {
 								AuthResult string
 							}{
 								"2.1.0",
-								filepath.Join(dir.BasePath(), "/example.com/foo/beep/2.1.0/bleep_bloop"),
+								filepath.Join(inst.globalCacheDir.BasePath(), "/example.com/foo/beep/2.1.0/bleep_bloop"),
 								"unauthenticated",
+							},
+						},
+						{
+							Event:    "LinkFromCacheBegin",
+							Provider: beepProvider,
+							Args: struct {
+								Version   string
+								CacheRoot string
+							}{
+								"2.1.0",
+								inst.globalCacheDir.BasePath(),
+							},
+						},
+						{
+							Event:    "LinkFromCacheSuccess",
+							Provider: beepProvider,
+							Args: struct {
+								Version  string
+								LocalDir string
+							}{
+								"2.1.0",
+								filepath.Join(dir.BasePath(), "example.com/foo/beep/2.1.0/bleep_bloop"),
 							},
 						},
 					},
@@ -846,6 +1073,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 						Location:       beepProviderDir,
 					},
 					nil,
+					false,
 				)
 				if err != nil {
 					t.Fatalf("failed to populate global cache: %s", err)
@@ -911,15 +1139,18 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args:     "2.1.0",
 						},
 						{
-							Event:    "LinkFromCacheBegin",
+							Event:    "FetchPackageMeta",
+							Provider: beepProvider,
+							Args:     "2.1.0",
+						},
+						{
+							Event:    "FetchPackageBegin",
 							Provider: beepProvider,
 							Args: struct {
-								Version   string
-								CacheRoot string
-							}{
-								"2.1.0",
-								inst.globalCacheDir.BasePath(),
-							},
+								Version  string
+								Location getproviders.PackageLocation
+								InCache  bool
+							}{"2.1.0", beepProviderDir, true},
 						},
 						{
 							Event:    "ProvidersLockUpdated",
@@ -934,6 +1165,30 @@ func TestEnsureProviderVersions(t *testing.T) {
 								[]getproviders.Hash{"h1:2y06Ykj0FRneZfGCTxI9wRTori8iB7ZL5kQ6YyEnh84="},
 								nil,
 								nil,
+							},
+						},
+						{
+							Event:    "FetchPackageSuccess",
+							Provider: beepProvider,
+							Args: struct {
+								Version    string
+								LocalDir   string
+								AuthResult string
+							}{
+								"2.1.0",
+								filepath.Join(inst.globalCacheDir.BasePath(), "example.com/foo/beep/2.1.0/bleep_bloop"),
+								"unauthenticated",
+							},
+						},
+						{
+							Event:    "LinkFromCacheBegin",
+							Provider: beepProvider,
+							Args: struct {
+								Version   string
+								CacheRoot string
+							}{
+								"2.1.0",
+								inst.globalCacheDir.BasePath(),
 							},
 						},
 						{
@@ -993,6 +1248,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 						Location:       beepProviderDir,
 					},
 					nil,
+					false,
 				)
 				if err != nil {
 					t.Fatalf("failed to populate global cache: %s", err)
@@ -1060,18 +1316,21 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args:     "2.1.0",
 						},
 						{
-							Event:    "LinkFromCacheBegin",
+							Event:    "FetchPackageMeta",
 							Provider: beepProvider,
-							Args: struct {
-								Version   string
-								CacheRoot string
-							}{
-								"2.1.0",
-								inst.globalCacheDir.BasePath(),
-							},
+							Args:     "2.1.0",
 						},
 						{
-							Event:    "LinkFromCacheFailure",
+							Event:    "FetchPackageBegin",
+							Provider: beepProvider,
+							Args: struct {
+								Version  string
+								Location getproviders.PackageLocation
+								InCache  bool
+							}{"2.1.0", beepProviderDir, true},
+						},
+						{
+							Event:    "FetchPackageFailure",
 							Provider: beepProvider,
 							Args: struct {
 								Version string
@@ -1079,8 +1338,8 @@ func TestEnsureProviderVersions(t *testing.T) {
 							}{
 								"2.1.0",
 								fmt.Sprintf(
-									"the provider cache at %s has a copy of example.com/foo/beep 2.1.0 that doesn't match any of the checksums recorded in the dependency lock file",
-									dir.BasePath(),
+									"the local package for %s 2.1.0 doesn't match any of the checksums previously recorded in the dependency lock file (this might be because the available checksums are for packages targeting different platforms); for more information: https://opentofu.org/docs/language/files/dependency-lock/#checksum-verification",
+									beepProvider,
 								),
 							},
 						},
@@ -1163,12 +1422,6 @@ func TestEnsureProviderVersions(t *testing.T) {
 								beepProvider: getproviders.MustParseVersionConstraints(">= 2.0.0"),
 							},
 						},
-						{
-							Event: "ProvidersFetched",
-							Args: map[addrs.Provider]*getproviders.PackageAuthenticationResult{
-								beepProvider: nil,
-							},
-						},
 					},
 					beepProvider: {
 						{
@@ -1195,7 +1448,8 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args: struct {
 								Version  string
 								Location getproviders.PackageLocation
-							}{"2.0.0", beepProviderDir},
+								InCache  bool
+							}{"2.0.0", beepProviderDir, false},
 						},
 						{
 							Event:    "ProvidersLockUpdated",
@@ -1260,6 +1514,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 						Location:       beepProviderDir,
 					},
 					nil,
+					false,
 				)
 				if err != nil {
 					t.Fatalf("installation to the test dir failed: %s", err)
@@ -1325,7 +1580,10 @@ func TestEnsureProviderVersions(t *testing.T) {
 						{
 							Event:    "ProviderAlreadyInstalled",
 							Provider: beepProvider,
-							Args:     versions.Version{Major: 2, Minor: 0, Patch: 0},
+							Args: struct {
+								Version getproviders.Version
+								InCache bool
+							}{versions.Version{Major: 2, Minor: 0, Patch: 0}, false},
 						},
 					},
 				}
@@ -1406,12 +1664,6 @@ func TestEnsureProviderVersions(t *testing.T) {
 								beepProvider: getproviders.MustParseVersionConstraints(">= 2.0.0"),
 							},
 						},
-						{
-							Event: "ProvidersFetched",
-							Args: map[addrs.Provider]*getproviders.PackageAuthenticationResult{
-								beepProvider: nil,
-							},
-						},
 					},
 					beepProvider: {
 						{
@@ -1438,7 +1690,8 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args: struct {
 								Version  string
 								Location getproviders.PackageLocation
-							}{"2.1.0", beepProviderDir},
+								InCache  bool
+							}{"2.1.0", beepProviderDir, false},
 						},
 						{
 							Event:    "ProvidersLockUpdated",
@@ -1584,12 +1837,6 @@ func TestEnsureProviderVersions(t *testing.T) {
 								beepProvider: getproviders.MustParseVersionConstraints(">= 1.0.0"),
 							},
 						},
-						{
-							Event: "ProvidersFetched",
-							Args: map[addrs.Provider]*getproviders.PackageAuthenticationResult{
-								beepProvider: nil,
-							},
-						},
 					},
 					// Note: intentionally no entries for example.com/foo/obsolete
 					// here, because it's no longer needed and therefore not
@@ -1619,7 +1866,8 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args: struct {
 								Version  string
 								Location getproviders.PackageLocation
-							}{"1.0.0", beepProviderDir},
+								InCache  bool
+							}{"1.0.0", beepProviderDir, false},
 						},
 						{
 							Event:    "ProvidersLockUpdated",
@@ -2018,7 +2266,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 				beepProvider: getproviders.MustParseVersionConstraints(">= 1.0.0"),
 			},
 			WantErr: `some providers could not be installed:
-- example.com/foo/beep: the local package for example.com/foo/beep 1.0.0 doesn't match any of the checksums previously recorded in the dependency lock file (this might be because the available checksums are for packages targeting different platforms); for more information: https://www.placeholderplaceholderplaceholder.io/language/provider-checksum-verification`,
+- example.com/foo/beep: the local package for example.com/foo/beep 1.0.0 doesn't match any of the checksums previously recorded in the dependency lock file (this might be because the available checksums are for packages targeting different platforms); for more information: https://opentofu.org/docs/language/files/dependency-lock/#checksum-verification`,
 			WantEvents: func(inst *Installer, dir *Dir) map[addrs.Provider][]*testInstallerEventLogItem {
 				return map[addrs.Provider][]*testInstallerEventLogItem{
 					noProvider: {
@@ -2054,7 +2302,8 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args: struct {
 								Version  string
 								Location getproviders.PackageLocation
-							}{"1.0.0", beepProviderDir},
+								InCache  bool
+							}{"1.0.0", beepProviderDir, false},
 						},
 						{
 							Event:    "FetchPackageFailure",
@@ -2064,7 +2313,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 								Error   string
 							}{
 								"1.0.0",
-								`the local package for example.com/foo/beep 1.0.0 doesn't match any of the checksums previously recorded in the dependency lock file (this might be because the available checksums are for packages targeting different platforms); for more information: https://www.placeholderplaceholderplaceholder.io/language/provider-checksum-verification`,
+								`the local package for example.com/foo/beep 1.0.0 doesn't match any of the checksums previously recorded in the dependency lock file (this might be because the available checksums are for packages targeting different platforms); for more information: https://opentofu.org/docs/language/files/dependency-lock/#checksum-verification`,
 							},
 						},
 					},
@@ -2134,12 +2383,6 @@ func TestEnsureProviderVersions(t *testing.T) {
 								beepProvider: getproviders.MustParseVersionConstraints(">= 1.0.0"),
 							},
 						},
-						{
-							Event: "ProvidersFetched",
-							Args: map[addrs.Provider]*getproviders.PackageAuthenticationResult{
-								beepProvider: nil,
-							},
-						},
 					},
 					beepProvider: {
 						{
@@ -2166,7 +2409,8 @@ func TestEnsureProviderVersions(t *testing.T) {
 							Args: struct {
 								Version  string
 								Location getproviders.PackageLocation
-							}{"1.0.0", beepProviderDir},
+								InCache  bool
+							}{"1.0.0", beepProviderDir, false},
 						},
 						{
 							Event:    "ProvidersLockUpdated",
@@ -2264,7 +2508,7 @@ func TestEnsureProviderVersions(t *testing.T) {
 
 			if test.WantEvents != nil {
 				wantEvents := test.WantEvents(inst, outputDir)
-				if diff := cmp.Diff(wantEvents, providerEvents); diff != "" {
+				if diff := cmp.Diff(wantEvents, providerEvents, cmp.AllowUnexported(getproviders.PackageAuthenticationResult{})); diff != "" {
 					t.Errorf("wrong installer events\n%s", diff)
 				}
 			}
@@ -2313,12 +2557,16 @@ func TestEnsureProviderVersions_local_source(t *testing.T) {
 			wantHash: getproviders.NilHash, // installation fails for a provider with no executable
 			err:      "provider binary not found: could not find executable file starting with terraform-provider-executable",
 		},
+		"unspecified-version": {
+			provider: "null",
+			version:  "0.0.0",
+			wantHash: getproviders.NilHash,
+			err:      "0.0.0 is not a valid provider version. \nIf the version 0.0.0 is intended to represent a non-published provider, consider using dev_overrides - https://opentofu.org/docs/cli/config/config-file/#development-overrides-for-provider-developers",
+		},
 	}
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			ctx := context.TODO()
-
 			provider := addrs.MustParseProviderSourceString(test.provider)
 			versionConstraint := getproviders.MustParseVersionConstraints(test.version)
 			version := getproviders.MustParseVersion(test.version)
@@ -2326,7 +2574,7 @@ func TestEnsureProviderVersions_local_source(t *testing.T) {
 				provider: versionConstraint,
 			}
 
-			newLocks, err := installer.EnsureProviderVersions(ctx, depsfile.NewLocks(), reqs, InstallNewProvidersOnly)
+			newLocks, err := installer.EnsureProviderVersions(t.Context(), depsfile.NewLocks(), reqs, InstallNewProvidersOnly)
 			gotProviderlocks := newLocks.AllProviders()
 			wantProviderLocks := map[addrs.Provider]*depsfile.ProviderLock{
 				provider: depsfile.NewProviderLock(
@@ -2413,8 +2661,7 @@ func TestEnsureProviderVersions_protocol_errors(t *testing.T) {
 			reqs := getproviders.Requirements{
 				test.provider: test.inputVersion,
 			}
-			ctx := context.TODO()
-			_, err := installer.EnsureProviderVersions(ctx, depsfile.NewLocks(), reqs, InstallNewProvidersOnly)
+			_, err := installer.EnsureProviderVersions(t.Context(), depsfile.NewLocks(), reqs, InstallNewProvidersOnly)
 
 			switch err := err.(type) {
 			case nil:
@@ -2471,12 +2718,12 @@ func testServices(t *testing.T) (services *disco.Disco, baseURL string, cleanup 
 		"providers.v1": server.URL + "/fails-immediately/",
 	})
 
-	// We'll also permit registry.terraform.io here just because it's our
+	// We'll also permit registry.opentofu.org here just because it's our
 	// default and has some unique features that are not allowed on any other
 	// hostname. It behaves the same as example.com, which should be preferred
 	// if you're not testing something specific to the default registry in order
 	// to ensure that most things are hostname-agnostic.
-	services.ForceHostServices(svchost.Hostname("registry.terraform.io"), map[string]interface{}{
+	services.ForceHostServices(svchost.Hostname("registry.opentofu.org"), map[string]interface{}{
 		"providers.v1": server.URL + "/providers/v1/",
 	})
 
@@ -2498,6 +2745,11 @@ func testRegistrySource(t *testing.T) (source *getproviders.RegistrySource, base
 }
 
 func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
+	write := func(data []byte) {
+		if _, err := resp.Write(data); err != nil {
+			panic(err)
+		}
+	}
 	path := req.URL.EscapedPath()
 	if strings.HasPrefix(path, "/fails-immediately/") {
 		// Here we take over the socket and just close it immediately, to
@@ -2507,13 +2759,13 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 			// Not hijackable, so we'll just fail normally.
 			// If this happens, tests relying on this will fail.
 			resp.WriteHeader(500)
-			resp.Write([]byte(`cannot hijack`))
+			write([]byte(`cannot hijack`))
 			return
 		}
 		conn, _, err := hijacker.Hijack()
 		if err != nil {
 			resp.WriteHeader(500)
-			resp.Write([]byte(`hijack failed`))
+			write([]byte(`hijack failed`))
 			return
 		}
 		conn.Close()
@@ -2523,28 +2775,28 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 	if strings.HasPrefix(path, "/pkg/") {
 		switch path {
 		case "/pkg/awesomesauce/happycloud_1.2.0.zip":
-			resp.Write([]byte("some zip file"))
+			write([]byte("some zip file"))
 		case "/pkg/awesomesauce/happycloud_1.2.0_SHA256SUMS":
-			resp.Write([]byte("000000000000000000000000000000000000000000000000000000000000f00d happycloud_1.2.0.zip\n"))
+			write([]byte("000000000000000000000000000000000000000000000000000000000000f00d happycloud_1.2.0.zip\n"))
 		case "/pkg/awesomesauce/happycloud_1.2.0_SHA256SUMS.sig":
-			resp.Write([]byte("GPG signature"))
+			write([]byte("GPG signature"))
 		default:
 			resp.WriteHeader(404)
-			resp.Write([]byte("unknown package file download"))
+			write([]byte("unknown package file download"))
 		}
 		return
 	}
 
 	if !strings.HasPrefix(path, "/providers/v1/") {
 		resp.WriteHeader(404)
-		resp.Write([]byte(`not a provider registry endpoint`))
+		write([]byte(`not a provider registry endpoint`))
 		return
 	}
 
 	pathParts := strings.Split(path, "/")[3:]
 	if len(pathParts) < 2 {
 		resp.WriteHeader(404)
-		resp.Write([]byte(`unexpected number of path parts`))
+		write([]byte(`unexpected number of path parts`))
 		return
 	}
 	log.Printf("[TRACE] fake provider registry request for %#v", pathParts)
@@ -2553,28 +2805,28 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 
 		case "-/legacy":
 			// NOTE: This legacy lookup endpoint is specific to
-			// registry.terraform.io and not expected to work on any other
+			// registry.opentofu.org and not expected to work on any other
 			// registry host.
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
-			resp.Write([]byte(`{"namespace":"legacycorp"}`))
+			write([]byte(`{"namespace":"legacycorp"}`))
 
 		default:
 			resp.WriteHeader(404)
-			resp.Write([]byte(`unknown namespace or provider type for direct lookup`))
+			write([]byte(`unknown namespace or provider type for direct lookup`))
 		}
 	}
 
 	if len(pathParts) < 3 {
 		resp.WriteHeader(404)
-		resp.Write([]byte(`unexpected number of path parts`))
+		write([]byte(`unexpected number of path parts`))
 		return
 	}
 
 	if pathParts[2] == "versions" {
 		if len(pathParts) != 3 {
 			resp.WriteHeader(404)
-			resp.Write([]byte(`extraneous path parts`))
+			write([]byte(`extraneous path parts`))
 			return
 		}
 
@@ -2585,18 +2837,18 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 			// Note that these version numbers are intentionally misordered
 			// so we can test that the client-side code places them in the
 			// correct order (lowest precedence first).
-			resp.Write([]byte(`{"versions":[{"version":"0.1.0","protocols":["1.0"]},{"version":"2.0.0","protocols":["99.0"]},{"version":"1.2.0","protocols":["5.0"]}, {"version":"1.0.0","protocols":["5.0"]}]}`))
+			write([]byte(`{"versions":[{"version":"0.1.0","protocols":["1.0"]},{"version":"2.0.0","protocols":["99.0"]},{"version":"1.2.0","protocols":["5.0"]}, {"version":"1.0.0","protocols":["5.0"]}]}`))
 		case "weaksauce/unsupported-protocol":
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
-			resp.Write([]byte(`{"versions":[{"version":"0.1.0","protocols":["0.1"]}]}`))
+			write([]byte(`{"versions":[{"version":"0.1.0","protocols":["0.1"]}]}`))
 		case "weaksauce/no-versions":
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
-			resp.Write([]byte(`{"versions":[]}`))
+			write([]byte(`{"versions":[]}`))
 		default:
 			resp.WriteHeader(404)
-			resp.Write([]byte(`unknown namespace or provider type`))
+			write([]byte(`unknown namespace or provider type`))
 		}
 		return
 	}
@@ -2606,7 +2858,7 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 		case "awesomesauce/happycloud":
 			if pathParts[4] == "nonexist" {
 				resp.WriteHeader(404)
-				resp.Write([]byte(`unsupported OS`))
+				write([]byte(`unsupported OS`))
 				return
 			}
 			version := pathParts[2]
@@ -2630,11 +2882,11 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 			enc, err := json.Marshal(body)
 			if err != nil {
 				resp.WriteHeader(500)
-				resp.Write([]byte("failed to encode body"))
+				write([]byte("failed to encode body"))
 			}
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
-			resp.Write(enc)
+			write(enc)
 		case "weaksauce/unsupported-protocol":
 			var protocols []string
 			version := pathParts[2]
@@ -2667,20 +2919,20 @@ func fakeRegistryHandler(resp http.ResponseWriter, req *http.Request) {
 			enc, err := json.Marshal(body)
 			if err != nil {
 				resp.WriteHeader(500)
-				resp.Write([]byte("failed to encode body"))
+				write([]byte("failed to encode body"))
 			}
 			resp.Header().Set("Content-Type", "application/json")
 			resp.WriteHeader(200)
-			resp.Write(enc)
+			write(enc)
 		default:
 			resp.WriteHeader(404)
-			resp.Write([]byte(`unknown namespace/provider/version/architecture`))
+			write([]byte(`unknown namespace/provider/version/architecture`))
 		}
 		return
 	}
 
 	resp.WriteHeader(404)
-	resp.Write([]byte(`unrecognized path scheme`))
+	write([]byte(`unrecognized path scheme`))
 }
 
 // In order to be able to compare the recorded temp dir paths, we need to

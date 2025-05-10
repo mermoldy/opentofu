@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package cloud
@@ -13,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	gomock "github.com/golang/mock/gomock"
 	"github.com/google/go-cmp/cmp"
 	tfe "github.com/hashicorp/go-tfe"
 	mocks "github.com/hashicorp/go-tfe/mocks"
 	version "github.com/hashicorp/go-version"
 	"github.com/mitchellh/cli"
+	gomock "go.uber.org/mock/gomock"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/backend"
@@ -37,16 +39,16 @@ import (
 	tfversion "github.com/opentofu/opentofu/version"
 )
 
-func testOperationApply(t *testing.T, configDir string) (*backend.Operation, func(), func(*testing.T) *terminal.TestOutput) {
+func testOperationApply(t *testing.T, configDir string) (*backend.Operation, func(*testing.T) *terminal.TestOutput) {
 	t.Helper()
 
 	return testOperationApplyWithTimeout(t, configDir, 0)
 }
 
-func testOperationApplyWithTimeout(t *testing.T, configDir string, timeout time.Duration) (*backend.Operation, func(), func(*testing.T) *terminal.TestOutput) {
+func testOperationApplyWithTimeout(t *testing.T, configDir string, timeout time.Duration) (*backend.Operation, func(*testing.T) *terminal.TestOutput) {
 	t.Helper()
 
-	_, configLoader, configCleanup := initwd.MustLoadConfigForTests(t, configDir, "tests")
+	_, configLoader := initwd.MustLoadConfigForTests(t, configDir, "tests")
 
 	streams, done := terminal.StreamsForTesting(t)
 	view := views.NewView(streams)
@@ -56,7 +58,7 @@ func testOperationApplyWithTimeout(t *testing.T, configDir string, timeout time.
 	// Many of our tests use an overridden "null" provider that's just in-memory
 	// inside the test process, not a separate plugin on disk.
 	depLocks := depsfile.NewLocks()
-	depLocks.SetProviderOverridden(addrs.MustParseProviderSourceString("registry.terraform.io/hashicorp/null"))
+	depLocks.SetProviderOverridden(addrs.MustParseProviderSourceString("registry.opentofu.org/hashicorp/null"))
 
 	return &backend.Operation{
 		ConfigDir:       configDir,
@@ -66,15 +68,14 @@ func testOperationApplyWithTimeout(t *testing.T, configDir string, timeout time.
 		Type:            backend.OperationTypeApply,
 		View:            operationView,
 		DependencyLocks: depLocks,
-	}, configCleanup, done
+	}, done
 }
 
 func TestCloud_applyBasic(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -103,7 +104,7 @@ func TestCloud_applyBasic(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -113,7 +114,7 @@ func TestCloud_applyBasic(t *testing.T) {
 		t.Fatalf("expected apply summery in output: %s", output)
 	}
 
-	stateMgr, _ := b.StateMgr(testBackendSingleWorkspaceName)
+	stateMgr, _ := b.StateMgr(t.Context(), testBackendSingleWorkspaceName)
 	// An error suggests that the state was not unlocked after apply
 	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
 		t.Fatalf("unexpected error locking state after apply: %s", err.Error())
@@ -131,8 +132,7 @@ func TestCloud_applyJSONBasic(t *testing.T) {
 		Colorize: mockColorize(),
 	}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-json")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-json")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -172,7 +172,7 @@ func TestCloud_applyJSONBasic(t *testing.T) {
 		t.Fatalf("expected apply summary in output: %s", gotOut)
 	}
 
-	stateMgr, _ := b.StateMgr(testBackendSingleWorkspaceName)
+	stateMgr, _ := b.StateMgr(t.Context(), testBackendSingleWorkspaceName)
 	// An error suggests that the state was not unlocked after apply
 	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
 		t.Fatalf("unexpected error locking state after apply: %s", err.Error())
@@ -190,8 +190,7 @@ func TestCloud_applyJSONWithOutputs(t *testing.T) {
 		Colorize: mockColorize(),
 	}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-json-with-outputs")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-json-with-outputs")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -260,7 +259,7 @@ func TestCloud_applyJSONWithOutputs(t *testing.T) {
 	if !strings.Contains(gotOut, expectedComplexOutput) {
 		t.Fatalf("expected output: %s, got: %s", expectedComplexOutput, gotOut)
 	}
-	stateMgr, _ := b.StateMgr(testBackendSingleWorkspaceName)
+	stateMgr, _ := b.StateMgr(t.Context(), testBackendSingleWorkspaceName)
 	// An error suggests that the state was not unlocked after apply
 	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
 		t.Fatalf("unexpected error locking state after apply: %s", err.Error())
@@ -271,8 +270,7 @@ func TestCloud_applyCanceled(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	op.Workspace = testBackendSingleWorkspaceName
@@ -290,7 +288,7 @@ func TestCloud_applyCanceled(t *testing.T) {
 		t.Fatal("expected apply operation to fail")
 	}
 
-	stateMgr, _ := b.StateMgr(testBackendSingleWorkspaceName)
+	stateMgr, _ := b.StateMgr(t.Context(), testBackendSingleWorkspaceName)
 	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
 		t.Fatalf("unexpected error locking state after cancelling apply: %s", err.Error())
 	}
@@ -313,8 +311,7 @@ func TestCloud_applyWithoutPermissions(t *testing.T) {
 	}
 	w.Permissions.CanQueueApply = false
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 
 	op.UIOut = b.CLI
 	op.Workspace = "prod"
@@ -353,8 +350,7 @@ func TestCloud_applyWithVCS(t *testing.T) {
 		t.Fatalf("error creating named workspace: %v", err)
 	}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 
 	op.Workspace = "prod"
 
@@ -382,8 +378,7 @@ func TestCloud_applyWithParallelism(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 
 	if b.ContextOpts == nil {
 		b.ContextOpts = &tofu.ContextOpts{}
@@ -413,8 +408,7 @@ func TestCloud_applyWithLocalPlan(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 
 	op.PlanFile = planfile.NewWrappedLocal(&planfile.Reader{})
 	op.Workspace = testBackendSingleWorkspaceName
@@ -445,8 +439,7 @@ func TestCloud_applyWithCloudPlan(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-json")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-json")
 	defer done(t)
 
 	op.UIOut = b.CLI
@@ -460,7 +453,7 @@ func TestCloud_applyWithCloudPlan(t *testing.T) {
 		t.Fatalf("Couldn't read workspace: %s", err)
 	}
 
-	planRun, err := b.plan(context.Background(), context.Background(), op, ws)
+	planRun, err := b.plan(context.Background(), context.Background(), context.Background(), op, ws)
 	if err != nil {
 		t.Fatalf("Couldn't perform plan: %s", err)
 	}
@@ -501,7 +494,7 @@ func TestCloud_applyWithCloudPlan(t *testing.T) {
 		t.Fatalf("expected apply summary in output: %s", gotOut)
 	}
 
-	stateMgr, _ := b.StateMgr(testBackendSingleWorkspaceName)
+	stateMgr, _ := b.StateMgr(t.Context(), testBackendSingleWorkspaceName)
 	// An error suggests that the state was not unlocked after apply
 	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
 		t.Fatalf("unexpected error locking state after apply: %s", err.Error())
@@ -512,8 +505,7 @@ func TestCloud_applyWithoutRefresh(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	op.PlanRefresh = false
@@ -549,8 +541,7 @@ func TestCloud_applyWithRefreshOnly(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	op.PlanMode = plans.RefreshOnlyMode
@@ -586,8 +577,7 @@ func TestCloud_applyWithTarget(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	addr, _ := addrs.ParseAbsResourceStr("null_resource.foo")
@@ -621,12 +611,49 @@ func TestCloud_applyWithTarget(t *testing.T) {
 	}
 }
 
+// Applying with an exclude flag should error
+func TestCloud_applyWithExclude(t *testing.T) {
+	b, bCleanup := testBackendWithName(t)
+	defer bCleanup()
+
+	op, done := testOperationApply(t, "./testdata/apply")
+
+	addr, _ := addrs.ParseAbsResourceStr("null_resource.foo")
+
+	op.Workspace = testBackendSingleWorkspaceName
+	op.Excludes = []addrs.Targetable{addr}
+
+	run, err := b.Operation(context.Background(), op)
+	if err != nil {
+		t.Fatalf("error starting operation: %v", err)
+	}
+
+	<-run.Done()
+	output := done(t)
+	if run.Result == backend.OperationSuccess {
+		t.Fatal("expected apply operation to fail")
+	}
+	if !run.PlanEmpty {
+		t.Fatalf("expected plan to be empty")
+	}
+
+	errOutput := output.Stderr()
+	if !strings.Contains(errOutput, "-exclude option is not supported") {
+		t.Fatalf("expected -exclude option is not supported error, got: %v", errOutput)
+	}
+
+	stateMgr, _ := b.StateMgr(t.Context(), testBackendSingleWorkspaceName)
+	// An error suggests that the state was not unlocked after apply
+	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
+		t.Fatalf("unexpected error locking state after failed apply: %s", err.Error())
+	}
+}
+
 func TestCloud_applyWithReplace(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	addr, _ := addrs.ParseAbsResourceInstanceStr("null_resource.foo")
@@ -664,8 +691,7 @@ func TestCloud_applyWithRequiredVariables(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-variables")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-variables")
 	defer done(t)
 
 	op.Variables = testVariables(tofu.ValueFromNamedFile, "foo") // "bar" variable value missing
@@ -684,7 +710,7 @@ func TestCloud_applyWithRequiredVariables(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("unexpected TFC header in output: %s", output)
 	}
 }
@@ -693,8 +719,7 @@ func TestCloud_applyNoConfig(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/empty")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/empty")
 
 	op.Workspace = testBackendSingleWorkspaceName
 
@@ -717,7 +742,7 @@ func TestCloud_applyNoConfig(t *testing.T) {
 		t.Fatalf("expected configuration files error, got: %v", errOutput)
 	}
 
-	stateMgr, _ := b.StateMgr(testBackendSingleWorkspaceName)
+	stateMgr, _ := b.StateMgr(t.Context(), testBackendSingleWorkspaceName)
 	// An error suggests that the state was not unlocked after apply
 	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
 		t.Fatalf("unexpected error locking state after failed apply: %s", err.Error())
@@ -728,8 +753,7 @@ func TestCloud_applyNoChanges(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-no-changes")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-no-changes")
 	defer done(t)
 
 	op.Workspace = testBackendSingleWorkspaceName
@@ -760,8 +784,7 @@ func TestCloud_applyNoApprove(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 
 	input := testInput(t, map[string]string{
 		"approve": "no",
@@ -807,8 +830,7 @@ func TestCloud_applyAutoApprove(t *testing.T) {
 	applyMock.EXPECT().Logs(gomock.Any(), gomock.Any()).Return(logs, nil)
 	b.client.Applies = applyMock
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -838,7 +860,7 @@ func TestCloud_applyAutoApprove(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -853,8 +875,7 @@ func TestCloud_applyApprovedExternally(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -909,7 +930,7 @@ func TestCloud_applyApprovedExternally(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -927,8 +948,7 @@ func TestCloud_applyDiscardedExternally(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -983,7 +1003,7 @@ func TestCloud_applyDiscardedExternally(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -1021,8 +1041,7 @@ func TestCloud_applyWithAutoApprove(t *testing.T) {
 		t.Fatalf("error creating named workspace: %v", err)
 	}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -1052,7 +1071,7 @@ func TestCloud_applyWithAutoApprove(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -1066,16 +1085,12 @@ func TestCloud_applyWithAutoApprove(t *testing.T) {
 func TestCloud_applyForceLocal(t *testing.T) {
 	// Set TF_FORCE_LOCAL_BACKEND so the cloud backend will use
 	// the local backend with itself as embedded backend.
-	if err := os.Setenv("TF_FORCE_LOCAL_BACKEND", "1"); err != nil {
-		t.Fatalf("error setting environment variable TF_FORCE_LOCAL_BACKEND: %v", err)
-	}
-	defer os.Unsetenv("TF_FORCE_LOCAL_BACKEND")
+	t.Setenv("TF_FORCE_LOCAL_BACKEND", "1")
 
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -1108,7 +1123,7 @@ func TestCloud_applyForceLocal(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if strings.Contains(output, "Running apply in Terraform Cloud") {
+	if strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("unexpected TFC header in output: %s", output)
 	}
 	if output := done(t).Stdout(); !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -1137,8 +1152,7 @@ func TestCloud_applyWorkspaceWithoutOperations(t *testing.T) {
 		t.Fatalf("error creating named workspace: %v", err)
 	}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -1171,7 +1185,7 @@ func TestCloud_applyWorkspaceWithoutOperations(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if strings.Contains(output, "Running apply in Terraform Cloud") {
+	if strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("unexpected TFC header in output: %s", output)
 	}
 	if output := done(t).Stdout(); !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -1209,8 +1223,7 @@ func TestCloud_applyLockTimeout(t *testing.T) {
 		t.Fatalf("error creating pending run: %v", err)
 	}
 
-	op, configCleanup, done := testOperationApplyWithTimeout(t, "./testdata/apply", 50*time.Millisecond)
-	defer configCleanup()
+	op, done := testOperationApplyWithTimeout(t, "./testdata/apply", 50*time.Millisecond)
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -1242,11 +1255,11 @@ func TestCloud_applyLockTimeout(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "Lock timeout exceeded") {
-		t.Fatalf("expected lock timout error in output: %s", output)
+		t.Fatalf("expected lock timeout error in output: %s", output)
 	}
 	if strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
 		t.Fatalf("unexpected plan summery in output: %s", output)
@@ -1260,8 +1273,7 @@ func TestCloud_applyDestroy(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-destroy")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-destroy")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -1291,7 +1303,7 @@ func TestCloud_applyDestroy(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "0 to add, 0 to change, 1 to destroy") {
@@ -1310,8 +1322,7 @@ func TestCloud_applyDestroyNoConfig(t *testing.T) {
 		"approve": "yes",
 	})
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/empty")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/empty")
 	defer done(t)
 
 	op.PlanMode = plans.DestroyMode
@@ -1351,8 +1362,7 @@ func TestCloud_applyJSONWithProvisioner(t *testing.T) {
 		"approve": "yes",
 	})
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-json-with-provisioner")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-json-with-provisioner")
 	defer done(t)
 
 	op.UIIn = input
@@ -1393,7 +1403,7 @@ func TestCloud_applyJSONWithProvisioner(t *testing.T) {
 		t.Fatalf("expected provisioner local-exec output in logs: %s", gotOut)
 	}
 
-	stateMgr, _ := b.StateMgr(testBackendSingleWorkspaceName)
+	stateMgr, _ := b.StateMgr(t.Context(), testBackendSingleWorkspaceName)
 	// An error suggests that the state was not unlocked after apply
 	if _, err := stateMgr.Lock(statemgr.NewLockInfo()); err != nil {
 		t.Fatalf("unexpected error locking state after apply: %s", err.Error())
@@ -1411,8 +1421,7 @@ func TestCloud_applyJSONWithProvisionerError(t *testing.T) {
 		Colorize: mockColorize(),
 	}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-json-with-provisioner-error")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-json-with-provisioner-error")
 	defer done(t)
 
 	op.Workspace = testBackendSingleWorkspaceName
@@ -1438,8 +1447,7 @@ func TestCloud_applyPolicyPass(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-policy-passed")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-policy-passed")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -1468,7 +1476,7 @@ func TestCloud_applyPolicyPass(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -1486,8 +1494,7 @@ func TestCloud_applyPolicyHardFail(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-policy-hard-failed")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-policy-hard-failed")
 
 	input := testInput(t, map[string]string{
 		"approve": "yes",
@@ -1521,7 +1528,7 @@ func TestCloud_applyPolicyHardFail(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -1539,8 +1546,7 @@ func TestCloud_applyPolicySoftFail(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-policy-soft-failed")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-policy-soft-failed")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -1571,7 +1577,7 @@ func TestCloud_applyPolicySoftFail(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -1617,8 +1623,7 @@ func TestCloud_applyPolicySoftFailAutoApproveSuccess(t *testing.T) {
 	applyMock.EXPECT().Logs(gomock.Any(), gomock.Any()).Return(logs, nil)
 	b.client.Applies = applyMock
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-policy-soft-failed")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-policy-soft-failed")
 
 	input := testInput(t, map[string]string{})
 
@@ -1639,7 +1644,7 @@ func TestCloud_applyPolicySoftFailAutoApproveSuccess(t *testing.T) {
 	}
 
 	if run.PlanEmpty {
-		t.Fatalf("expected plan to not be empty, plan opertion completed without error")
+		t.Fatalf("expected plan to not be empty, plan operation completed without error")
 	}
 
 	if len(input.answers) != 0 {
@@ -1653,7 +1658,7 @@ func TestCloud_applyPolicySoftFailAutoApproveSuccess(t *testing.T) {
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
 	if !strings.Contains(output, "Sentinel Result: false") {
-		t.Fatalf("expected policy check to be false, insead got: %s", output)
+		t.Fatalf("expected policy check to be false, instead got: %s", output)
 	}
 	if !strings.Contains(output, "Apply complete!") {
 		t.Fatalf("expected apply to be complete, instead got: %s", output)
@@ -1688,8 +1693,7 @@ func TestCloud_applyPolicySoftFailAutoApprove(t *testing.T) {
 		t.Fatalf("error creating named workspace: %v", err)
 	}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-policy-soft-failed")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-policy-soft-failed")
 	defer done(t)
 
 	input := testInput(t, map[string]string{
@@ -1720,7 +1724,7 @@ func TestCloud_applyPolicySoftFailAutoApprove(t *testing.T) {
 	}
 
 	output := b.CLI.(*cli.MockUi).OutputWriter.String()
-	if !strings.Contains(output, "Running apply in Terraform Cloud") {
+	if !strings.Contains(output, "Running apply in cloud backend") {
 		t.Fatalf("expected TFC header in output: %s", output)
 	}
 	if !strings.Contains(output, "1 to add, 0 to change, 0 to destroy") {
@@ -1738,8 +1742,7 @@ func TestCloud_applyWithRemoteError(t *testing.T) {
 	b, bCleanup := testBackendWithName(t)
 	defer bCleanup()
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-with-error")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-with-error")
 	defer done(t)
 
 	op.Workspace = testBackendSingleWorkspaceName
@@ -1774,8 +1777,7 @@ func TestCloud_applyJSONWithRemoteError(t *testing.T) {
 		Colorize: mockColorize(),
 	}
 
-	op, configCleanup, done := testOperationApply(t, "./testdata/apply-json-with-error")
-	defer configCleanup()
+	op, done := testOperationApply(t, "./testdata/apply-json-with-error")
 	defer done(t)
 
 	op.Workspace = testBackendSingleWorkspaceName
@@ -1882,8 +1884,7 @@ func TestCloud_applyVersionCheck(t *testing.T) {
 			}
 
 			// RUN: prepare the apply operation and run it
-			op, configCleanup, opDone := testOperationApply(t, "./testdata/apply")
-			defer configCleanup()
+			op, opDone := testOperationApply(t, "./testdata/apply")
 			defer opDone(t)
 
 			streams, done := terminal.StreamsForTesting(t)
@@ -1924,7 +1925,7 @@ func TestCloud_applyVersionCheck(t *testing.T) {
 					t.Fatalf("operation failed: %s", b.CLI.(*cli.MockUi).ErrorWriter.String())
 				}
 				output := b.CLI.(*cli.MockUi).OutputWriter.String()
-				hasRemote := strings.Contains(output, "Running apply in Terraform Cloud")
+				hasRemote := strings.Contains(output, "Running apply in cloud backend")
 				hasSummary := strings.Contains(output, "1 added, 0 changed, 0 destroyed")
 				hasResources := run.State.HasManagedResourceInstanceObjects()
 				if !tc.forceLocal && !isLocalExecutionMode(tc.executionMode) {

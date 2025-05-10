@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package kubernetes
@@ -7,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/opentofu/opentofu/internal/backend"
+	"github.com/opentofu/opentofu/internal/encryption"
 	"github.com/opentofu/opentofu/internal/states/remote"
 	"github.com/opentofu/opentofu/internal/states/statemgr"
 )
@@ -20,11 +23,11 @@ func TestRemoteClient(t *testing.T) {
 	testACC(t)
 	defer cleanupK8sResources(t)
 
-	b := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(map[string]interface{}{
+	b := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(map[string]interface{}{
 		"secret_suffix": secretSuffix,
 	}))
 
-	state, err := b.StateMgr(backend.DefaultStateName)
+	state, err := b.StateMgr(t.Context(), backend.DefaultStateName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,20 +39,20 @@ func TestRemoteClientLocks(t *testing.T) {
 	testACC(t)
 	defer cleanupK8sResources(t)
 
-	b1 := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(map[string]interface{}{
+	b1 := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(map[string]interface{}{
 		"secret_suffix": secretSuffix,
 	}))
 
-	b2 := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(map[string]interface{}{
+	b2 := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(map[string]interface{}{
 		"secret_suffix": secretSuffix,
 	}))
 
-	s1, err := b1.StateMgr(backend.DefaultStateName)
+	s1, err := b1.StateMgr(t.Context(), backend.DefaultStateName)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	s2, err := b2.StateMgr(backend.DefaultStateName)
+	s2, err := b2.StateMgr(t.Context(), backend.DefaultStateName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,16 +64,16 @@ func TestForceUnlock(t *testing.T) {
 	testACC(t)
 	defer cleanupK8sResources(t)
 
-	b1 := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(map[string]interface{}{
+	b1 := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(map[string]interface{}{
 		"secret_suffix": secretSuffix,
 	}))
 
-	b2 := backend.TestBackendConfig(t, New(), backend.TestWrapConfig(map[string]interface{}{
+	b2 := backend.TestBackendConfig(t, New(encryption.StateEncryptionDisabled()), backend.TestWrapConfig(map[string]interface{}{
 		"secret_suffix": secretSuffix,
 	}))
 
 	// first test with default
-	s1, err := b1.StateMgr(backend.DefaultStateName)
+	s1, err := b1.StateMgr(t.Context(), backend.DefaultStateName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +88,7 @@ func TestForceUnlock(t *testing.T) {
 	}
 
 	// s1 is now locked, get the same state through s2 and unlock it
-	s2, err := b2.StateMgr(backend.DefaultStateName)
+	s2, err := b2.StateMgr(t.Context(), backend.DefaultStateName)
 	if err != nil {
 		t.Fatal("failed to get default state to force unlock:", err)
 	}
@@ -96,7 +99,7 @@ func TestForceUnlock(t *testing.T) {
 
 	// now try the same thing with a named state
 	// first test with default
-	s1, err = b1.StateMgr("test")
+	s1, err = b1.StateMgr(t.Context(), "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +114,7 @@ func TestForceUnlock(t *testing.T) {
 	}
 
 	// s1 is now locked, get the same state through s2 and unlock it
-	s2, err = b2.StateMgr("test")
+	s2, err = b2.StateMgr(t.Context(), "test")
 	if err != nil {
 		t.Fatal("failed to get named state to force unlock:", err)
 	}

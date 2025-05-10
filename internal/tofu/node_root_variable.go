@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"log"
 
 	"github.com/zclconf/go-cty/cty"
@@ -25,13 +28,10 @@ type NodeRootVariable struct {
 	// converted or validated, and can be nil for a variable that isn't
 	// set at all.
 	RawValue *InputValue
-
-	// Planning must be set to true when building a planning graph, and must be
-	// false when building an apply graph.
-	Planning bool
 }
 
 var (
+	_ GraphNodeExecutable     = (*NodeRootVariable)(nil)
 	_ GraphNodeModuleInstance = (*NodeRootVariable)(nil)
 	_ GraphNodeReferenceable  = (*NodeRootVariable)(nil)
 )
@@ -55,7 +55,7 @@ func (n *NodeRootVariable) ReferenceableAddrs() []addrs.Referenceable {
 }
 
 // GraphNodeExecutable
-func (n *NodeRootVariable) Execute(ctx EvalContext, op walkOperation) tfdiags.Diagnostics {
+func (n *NodeRootVariable) Execute(_ context.Context, evalCtx EvalContext, op walkOperation) tfdiags.Diagnostics {
 	// Root module variables are special in that they are provided directly
 	// by the caller (usually, the CLI layer) and so we don't really need to
 	// evaluate them in the usual sense, but we do need to process the raw
@@ -87,14 +87,6 @@ func (n *NodeRootVariable) Execute(ctx EvalContext, op walkOperation) tfdiags.Di
 		}
 	}
 
-	if n.Planning {
-		if checkState := ctx.Checks(); checkState.ConfigHasChecks(n.Addr.InModule(addrs.RootModule)) {
-			ctx.Checks().ReportCheckableObjects(
-				n.Addr.InModule(addrs.RootModule),
-				addrs.MakeSet[addrs.Checkable](n.Addr.Absolute(addrs.RootModuleInstance)))
-		}
-	}
-
 	finalVal, moreDiags := prepareFinalInputVariableValue(
 		addr,
 		givenVal,
@@ -107,15 +99,8 @@ func (n *NodeRootVariable) Execute(ctx EvalContext, op walkOperation) tfdiags.Di
 		return diags
 	}
 
-	ctx.SetRootModuleArgument(addr.Variable, finalVal)
+	evalCtx.SetRootModuleArgument(addr.Variable, finalVal)
 
-	moreDiags = evalVariableValidations(
-		addrs.RootModuleInstance.InputVariable(n.Addr.Name),
-		n.Config,
-		nil, // not set for root module variables
-		ctx,
-	)
-	diags = diags.Append(moreDiags)
 	return diags
 }
 

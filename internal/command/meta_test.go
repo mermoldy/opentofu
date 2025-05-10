@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package command
@@ -14,6 +16,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/mitchellh/cli"
+
 	"github.com/opentofu/opentofu/internal/backend"
 	"github.com/opentofu/opentofu/internal/backend/local"
 	"github.com/opentofu/opentofu/internal/tofu"
@@ -97,8 +100,6 @@ func TestMetaInputMode(t *testing.T) {
 func TestMetaInputMode_envVar(t *testing.T) {
 	test = false
 	defer func() { test = true }()
-	old := os.Getenv(InputModeEnvVar)
-	defer os.Setenv(InputModeEnvVar, old)
 
 	m := new(Meta)
 	args := []string{}
@@ -121,7 +122,7 @@ func TestMetaInputMode_envVar(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		os.Setenv(InputModeEnvVar, tc.EnvVar)
+		t.Setenv(InputModeEnvVar, tc.EnvVar)
 		if m.InputMode() != tc.Expected {
 			t.Fatalf("expected InputMode: %#v, got: %#v", tc.Expected, m.InputMode())
 		}
@@ -185,11 +186,11 @@ func TestMeta_initStatePaths(t *testing.T) {
 func TestMeta_Env(t *testing.T) {
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	m := new(Meta)
 
-	env, err := m.Workspace()
+	env, err := m.Workspace(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +204,7 @@ func TestMeta_Env(t *testing.T) {
 		t.Fatal("error setting env:", err)
 	}
 
-	env, _ = m.Workspace()
+	env, _ = m.Workspace(t.Context())
 	if env != testEnv {
 		t.Fatalf("expected env %q, got env %q", testEnv, env)
 	}
@@ -212,17 +213,13 @@ func TestMeta_Env(t *testing.T) {
 		t.Fatal("error setting env:", err)
 	}
 
-	env, _ = m.Workspace()
+	env, _ = m.Workspace(t.Context())
 	if env != backend.DefaultStateName {
 		t.Fatalf("expected env %q, got env %q", backend.DefaultStateName, env)
 	}
 }
 
 func TestMeta_Workspace_override(t *testing.T) {
-	defer func(value string) {
-		os.Setenv(WorkspaceNameEnvVar, value)
-	}(os.Getenv(WorkspaceNameEnvVar))
-
 	m := new(Meta)
 
 	testCases := map[string]struct {
@@ -245,8 +242,8 @@ func TestMeta_Workspace_override(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			os.Setenv(WorkspaceNameEnvVar, name)
-			workspace, err := m.Workspace()
+			t.Setenv(WorkspaceNameEnvVar, name)
+			workspace, err := m.Workspace(t.Context())
 			if workspace != tc.workspace {
 				t.Errorf("Unexpected workspace\n got: %s\nwant: %s\n", workspace, tc.workspace)
 			}
@@ -260,7 +257,7 @@ func TestMeta_Workspace_override(t *testing.T) {
 func TestMeta_Workspace_invalidSelected(t *testing.T) {
 	td := t.TempDir()
 	os.MkdirAll(td, 0755)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	// this is an invalid workspace name
 	workspace := "test workspace"
@@ -280,7 +277,7 @@ func TestMeta_Workspace_invalidSelected(t *testing.T) {
 
 	m := new(Meta)
 
-	ws, err := m.Workspace()
+	ws, err := m.Workspace(t.Context())
 	if ws != workspace {
 		t.Errorf("Unexpected workspace\n got: %s\nwant: %s\n", ws, workspace)
 	}
@@ -295,8 +292,7 @@ func TestMeta_process(t *testing.T) {
 
 	// Create a temporary directory for our cwd
 	d := t.TempDir()
-	os.MkdirAll(d, 0755)
-	defer testChdir(t, d)()
+	t.Chdir(d)
 
 	// At one point it was the responsibility of this process function to
 	// insert fake additional -var-file options into the command line
@@ -392,14 +388,14 @@ func TestCommand_checkRequiredVersion(t *testing.T) {
 	// Create a temporary working directory that is empty
 	td := t.TempDir()
 	testCopyDir(t, testFixturePath("command-check-required-version"), td)
-	defer testChdir(t, td)()
+	t.Chdir(td)
 
 	ui := cli.NewMockUi()
 	meta := Meta{
 		Ui: ui,
 	}
 
-	diags := meta.checkRequiredVersion()
+	diags := meta.checkRequiredVersion(t.Context())
 	if diags == nil {
 		t.Fatalf("diagnostics should contain unmet version constraint, but is nil")
 	}

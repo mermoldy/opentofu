@@ -1,4 +1,6 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
@@ -17,28 +19,28 @@ func TestRootTransformer(t *testing.T) {
 		g := Graph{Path: addrs.RootModuleInstance}
 		{
 			tf := &ConfigTransformer{Config: mod}
-			if err := tf.Transform(&g); err != nil {
+			if err := tf.Transform(t.Context(), &g); err != nil {
 				t.Fatalf("err: %s", err)
 			}
 		}
 
 		{
 			transform := &MissingProviderTransformer{}
-			if err := transform.Transform(&g); err != nil {
+			if err := transform.Transform(t.Context(), &g); err != nil {
 				t.Fatalf("err: %s", err)
 			}
 		}
 
 		{
 			transform := &ProviderTransformer{}
-			if err := transform.Transform(&g); err != nil {
+			if err := transform.Transform(t.Context(), &g); err != nil {
 				t.Fatalf("err: %s", err)
 			}
 		}
 
 		{
 			transform := &RootTransformer{}
-			if err := transform.Transform(&g); err != nil {
+			if err := transform.Transform(t.Context(), &g); err != nil {
 				t.Fatalf("err: %s", err)
 			}
 		}
@@ -87,11 +89,11 @@ root
 
 const testTransformRootBasicStr = `
 aws_instance.foo
-  provider["registry.terraform.io/hashicorp/aws"]
+  provider["registry.opentofu.org/hashicorp/aws"]
 do_droplet.bar
-  provider["registry.terraform.io/hashicorp/do"]
-provider["registry.terraform.io/hashicorp/aws"]
-provider["registry.terraform.io/hashicorp/do"]
+  provider["registry.opentofu.org/hashicorp/do"]
+provider["registry.opentofu.org/hashicorp/aws"]
+provider["registry.opentofu.org/hashicorp/do"]
 root
   aws_instance.foo
   do_droplet.bar

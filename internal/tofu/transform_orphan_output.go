@@ -1,9 +1,12 @@
-// Copyright (c) HashiCorp, Inc.
+// Copyright (c) The OpenTofu Authors
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2023 HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
 package tofu
 
 import (
+	"context"
 	"log"
 
 	"github.com/opentofu/opentofu/internal/addrs"
@@ -20,7 +23,7 @@ type OrphanOutputTransformer struct {
 	Planning bool
 }
 
-func (t *OrphanOutputTransformer) Transform(g *Graph) error {
+func (t *OrphanOutputTransformer) Transform(_ context.Context, g *Graph) error {
 	if t.State == nil {
 		log.Printf("[DEBUG] No state, no orphan outputs")
 		return nil
